@@ -1,0 +1,18 @@
+[
+  {"id":1,"type":"sit","label":"Đang ngồi","positive":"a student sitting at a classroom desk","negative":"a student standing upright"},
+  {"id":2,"type":"stand","label":"Đang đứng","positive":"a student standing upright in a classroom","negative":"a student sitting at a desk"},
+  {"id":3,"type":"look_forward","label":"Nhìn về phía trước","positive":"a student looking forward towards the teacher","negative":"a student looking sideways away from the front"},
+  {"id":4,"type":"look_sideways","label":"Nhìn sang bên","positive":"a student looking sideways towards another student","negative":"a student looking forward at the teacher"},
+  {"id":5,"type":"read","label":"Đang đọc","positive":"a student reading an open book on the desk","negative":"a student looking up without reading a book"},
+  {"id":6,"type":"flip_books","label":"Đang lật sách","positive":"a student turning the pages of a book","negative":"a student holding a book still without turning pages"},
+  {"id":7,"type":"touch_sth","label":"Đang tương tác đồ vật","positive":"a student reaching for and touching an object on the desk","negative":"a student keeping both hands still"},
+  {"id":8,"type":"raise_hand","label":"Đang giơ tay","positive":"a student raising a hand above the shoulder","negative":"a student keeping both arms down"},
+  {"id":9,"type":"hands_down","label":"Đang hạ tay","positive":"a student lowering a raised hand","negative":"a student raising a hand above the shoulder"},
+  {"id":10,"type":"take_notes","label":"Đang ghi bài","positive":"a student writing notes with a pen in a notebook","negative":"a student looking at a notebook without writing"},
+  {"id":11,"type":"applaud","label":"Đang vỗ tay","positive":"a student clapping both hands together","negative":"a student resting hands on the desk"},
+  {"id":12,"type":"bend","label":"Đang cúi người","positive":"a student bending the upper body forward","negative":"a student sitting upright with a straight back"},
+  {"id":13,"type":"turn_around","label":"Đang quay người","positive":"a student turning around to look behind","negative":"a student facing forward towards the teacher"},
+  {"id":14,"type":"talk_with_others","label":"Đang trao đổi","positive":"students turning towards each other and having a conversation","negative":"a student silently listening to the teacher"},
+  {"id":15,"type":"answer_questions","label":"Đang trả lời câu hỏi","positive":"a student answering a teacher question in class","negative":"a student silently listening without speaking"},
+  {"id":16,"type":"slumped_on_desk","label":"Gục xuống bàn — có thể ngủ","positive":"a student lying forward with the head resting on arms on a classroom desk","negative":"a student leaning forward to read or write in a notebook"}
+]

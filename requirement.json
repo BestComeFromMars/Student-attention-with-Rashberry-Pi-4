@@ -1,0 +1,23 @@
+{
+  "node": ">=22.19.0",
+  "python": ["3.11", "3.10"],
+  "platforms": ["win32-x64", "linux-x64"],
+  "npmLocks": ["frontend/package-lock.json", "backend/package-lock.json"],
+  "pythonLock": "backend/ai/requirements.lock.txt",
+  "models": "backend/ai/models.json",
+  "bootstrapPython": {
+    "version": "3.11.14",
+    "release": "20251014",
+    "win32": {
+      "file": "cpython-3.11.14%2B20251014-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+      "bytes": 25648990,
+      "sha256": "c2a7b0bb86eb9f1cc094a01bdabef7ddc77f89f8e45161fa7819f2b4a7ba7bc1"
+    },
+    "linux": {
+      "file": "cpython-3.11.14%2B20251014-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "bytes": 30045958,
+      "sha256": "91ab434738647ab45d630aaa02e3808bb516239beeb52f7799c12a12d1557a38"
+    }
+  },
+  "note": "Windows x64 is validated locally; Linux x64 needs distribution libraries for OpenCV. Pi uses its own deployment, never the desktop AI installer."
+}

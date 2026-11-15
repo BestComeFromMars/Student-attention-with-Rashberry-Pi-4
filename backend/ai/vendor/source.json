@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/mountainai/cavt",
+  "commit": "9e46f654d6ca3df1b3931c9793efcdfd412b39c9",
+  "source": "mmaction/models/backbones/cait_transformer.py"
+}

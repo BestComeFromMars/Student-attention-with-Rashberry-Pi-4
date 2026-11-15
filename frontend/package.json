@@ -1,0 +1,48 @@
+{
+  "name": "student-attention-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:visual": "node scripts/visual-check.mjs",
+    "test:alerts": "node scripts/alert-hold-check.mjs",
+    "test:overlay": "node scripts/face-overlay-check.mjs",
+    "test:objects": "node scripts/object-focus-check.mjs",
+    "test:persons": "node scripts/check-person-overlay.mjs",
+    "test:usb-objects": "node scripts/usb-object-tracking-check.mjs",
+    "test:realtime": "node scripts/realtime-tracking-check.mjs",
+    "test:replay": "node scripts/replay-camera-video.mjs",
+    "test:startup": "node scripts/startup-check.mjs",
+    "test:settings": "node scripts/check-detection-settings.mjs",
+    "test:captures": "node scripts/check-attention-captures.mjs",
+    "test:history": "node scripts/check-history.mjs",
+    "test:cache": "node scripts/cache-check.mjs",
+    "test:camera": "node scripts/camera-dev-check.mjs",
+    "test:devices": "node scripts/camera-discovery-check.mjs",
+    "test:system": "node scripts/system-check.mjs",
+    "start": "vite --host localhost --port 3000 --strictPort",
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "node ../scripts/build.mjs frontend"
+  },
+  "dependencies": {
+    "lucide-react": "1.70.0",
+    "motion": "14.11.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "^22.19.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "jsdom": "26.1.0",
+    "playwright-core": "^1.65.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "vitest": "5.1.0"
+  }
+}

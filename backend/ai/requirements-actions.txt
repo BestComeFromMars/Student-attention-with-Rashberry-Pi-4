@@ -1,0 +1,5 @@
+# Inference preparation only; production actions use ONNX Runtime.
+timm==1.0.22
+ftfy==6.3.1
+open_clip_torch==2.30.0
+yt-dlp==2026.10.21

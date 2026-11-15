@@ -1,0 +1,23 @@
+[Unit]
+Description=Student Attention USB camera controller
+Wants=student-attention-media.service NetworkManager.service
+After=student-attention-media.service network.target
+
+[Service]
+User=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/StudentAttention/Raspberry_pi_4
+EnvironmentFile=/home/pi/StudentAttention/Raspberry_pi_4/.env
+Environment=CAMERA_STATE_FILE=/run/student-attention/state.json
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=student-attention
+RuntimeDirectoryPreserve=restart
+ExecStart=/usr/bin/python3 -u /home/pi/StudentAttention/Raspberry_pi_4/agent.py
+Restart=always
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=10
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

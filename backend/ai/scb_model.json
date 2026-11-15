@@ -1,0 +1,15 @@
+{
+  "name": "Official SCB5 YOLOv7 hand-raising/read/write",
+  "repository": "https://github.com/Whiffe/SCB-dataset",
+  "datasetRepository": "wintonYF/SCB-Dataset",
+  "revision": "0fdc46fe393d251320def8c6d10cbc95d89f7da6",
+  "checkpoint": "SCB5-Handrise-Read-write-2024-9-17/exp/weights/best.pt",
+  "bytes": 74825045,
+  "sha256": "1f93f151286b21c89338fb8e229b218c5b1d061cc7361c042aca6d416a415857",
+  "archive": "SCB5-Handrise-Read-write-2024-9-17/SCB5-Handrise-Read-write-2024-9-17.zip",
+  "classes": ["hand-raising", "read", "write"],
+  "isSCB3SixClassCheckpoint": false,
+  "architectureRepository": "https://github.com/WongKinYiu/yolov7",
+  "architectureCommit": "a207844b1ce82d204ab36d87d496728d3d2348e7",
+  "defaultEnabled": false
+}

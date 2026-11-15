@@ -1,0 +1,19 @@
+{
+  "name": "student-attention",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "requirement": "node scripts/requirement.mjs",
+    "start": "node scripts/start.mjs",
+    "examine": "node scripts/examiner.mjs",
+    "setup:model": "npm --prefix backend run setup:model",
+    "verify:model": "npm --prefix backend run verify:model",
+    "verify:observations": "npm --prefix backend run verify:observations",
+    "verify:classroom-actions": "npm --prefix backend run verify:classroom-actions",
+    "typecheck": "npm --prefix frontend run typecheck && npm --prefix backend run typecheck",
+    "build": "npm --prefix frontend run build && npm --prefix backend run build",
+    "test": "npm --prefix frontend test && npm --prefix backend test && npm --prefix Raspberry_pi_4 test"
+  }
+}

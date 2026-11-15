@@ -1,0 +1,29 @@
+{
+  "repository": "https://github.com/WongKinYiu/yolov7",
+  "commit": "a207844b1ce82d204ab36d87d496728d3d2348e7",
+  "files": {
+    "LICENSE.md": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "README.md": "3dd2c1b169ef559291ec36b61d28e8059457469538c55762f1ec73fe30939a6c",
+    "models/__init__.py": "0486028fa4d1cc658211b606e5935a4c74386a6e9cf5055b812f3484b1b46e57",
+    "models/common.py": "49b06b5390df6ad0150f54299abd62012715b95c6e5dd7c5df34d91e8b302e9c",
+    "models/experimental.py": "0b1f110389b704f9c20df8a8c83b37bfb4568fbdcba5aefaa059452b4d251276",
+    "models/yolo.py": "ed531d00ed88698652d4ede95f6a97a504304919c57904fd66a779c570c60e09",
+    "requirements.txt": "8093c4ea1b04408438e2ccfe933a03e84308cbb0c83bf0b8ceeedc1caed85f64",
+    "utils/__init__.py": "0486028fa4d1cc658211b606e5935a4c74386a6e9cf5055b812f3484b1b46e57",
+    "utils/activations.py": "0b9b091d4a84054d2e1cde2938c0458b5c65c65d354d5da5d6216ed1c47f6387",
+    "utils/add_nms.py": "ac9b48e316ffde353b34ca2178632411b30be4a19e3fd394a4c3233f40616654",
+    "utils/autoanchor.py": "98711c63a1a1f5f314b0d55feb3a15c88078cfba38198eb95de611653e1a52a2",
+    "utils/aws/__init__.py": "180307a47d0f030502c6bfc649cb5fbf57f1824aafcbd9a953514169f8499a49",
+    "utils/aws/resume.py": "26dbd4475ad939f3389566c3064becd36efd0d592c5a4aea592aaa21534cbcb0",
+    "utils/datasets.py": "3cb512907f2dc94b711158dd0f2ddc30c48f037723a40848e4de4978cbc3c1d6",
+    "utils/general.py": "096c725476e178bb88cf580eb264535add83d34647c431e303f4c97cb51e53d9",
+    "utils/google_utils.py": "39950e4729140d5f8cce4f0b8f59da392ae59f050d32ced383387c2175c23625",
+    "utils/loss.py": "4466fd90d1d1df53092d3ddc5d1f9d828d6eefbdc418727f3e9a8a685f6365f0",
+    "utils/metrics.py": "e77521c50c221c70e3e55312a64ac4831dee90dd9193eefdbc1fb3414a15fa0d",
+    "utils/plots.py": "ad7d53a16ef7069aeae8d805574503fe00ffe2b738e8746134faa23541b3e41f",
+    "utils/torch_utils.py": "eebe2e8504989840a1594acd10db242f4fee8c7f836c4a054048282f7d9ea96c",
+    "utils/wandb_logging/__init__.py": "0486028fa4d1cc658211b606e5935a4c74386a6e9cf5055b812f3484b1b46e57",
+    "utils/wandb_logging/log_dataset.py": "e4bc9d2ccef016e2caaf35bb513814a2f2be3ae5870b0448a16a0a30a1db49a8",
+    "utils/wandb_logging/wandb_utils.py": "6892c2a79e361d35a4eb25f2822cc890249e4e86d8a0ad9a8d0e9c71ee4e16a2"
+  }
+}

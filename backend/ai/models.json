@@ -1,0 +1,84 @@
+﻿{
+    "files":  [
+                  {
+                      "path": "face_detection_yunet_2023mar.onnx",
+                      "source": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+                      "bytes": 232589,
+                      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+                  },
+                  {
+                      "path":  "scrfd_500m.onnx",
+                      "source":  "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip",
+                      "archiveMember": "det_500m.onnx",
+                      "archive": { "bytes": 14969382, "sha256": "57d31b56b6ffa911c8a73cfc1707c73cab76efe7f13b675a05223bf42de47c72" },
+                      "bytes":  2524817,
+                      "sha256":  "5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a"
+                  },
+                  {
+                      "path": "scrfd_2.5g.onnx",
+                      "source": "https://github.com/deepinsight/insightface/releases/download/model-zoo/buffalo_m.zip",
+                      "archiveMember": "buffalo_m/det_2.5g.onnx",
+                      "archive": { "bytes": 275951529, "sha256": "d98264bd8f2dc75cbc2ddce2a14e636e02bb857b3051c234b737bf3b614edca9" },
+                      "bytes": 3292009,
+                      "sha256": "041f73f47371333d1d17a6fee6c8ab4e6aecabefe398ff32cca4e2d5eaee0af9"
+                  },
+                  {
+                      "path": "scrfd_10g.onnx",
+                      "source": "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip",
+                      "archiveMember": "det_10g.onnx",
+                      "archive": { "bytes": 288621354, "sha256": "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f" },
+                      "bytes": 16923827,
+                      "sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+                  },
+                  {
+                      "path": "object_tracking_vittrack_2023sep.onnx",
+                      "source": "https://huggingface.co/opencv/opencv_zoo/resolve/d4938dfc9d4ec5d098bfa33e98b3f3345a236586/models/object_tracking_vittrack/object_tracking_vittrack_2023sep.onnx",
+                      "bytes": 714726,
+                      "sha256": "2990f0b7cd44d92afa48cd97db6de7be113fc1d9594fddb74e2725c10478e91d"
+                  },
+                  {
+                      "path":  "face_landmarker.task",
+                      "source":  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+                      "bytes":  3758596,
+                      "sha256":  "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+                  },
+                  {
+                      "path":  "hand_landmarker.task",
+                      "source":  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task",
+                      "bytes":  7819105,
+                      "sha256":  "fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1"
+                  },
+                  {
+                      "path":  "yolo11s.pt",
+                      "source":  "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt",
+                      "bytes":  19313732,
+                      "sha256":  "85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5"
+                  },
+                  {
+                      "path":  "yolo11m.pt",
+                      "source":  "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11m.pt",
+                      "bytes":  40684120,
+                      "sha256":  "d5ffc1a674953a08e11a8d21e022781b1b23a19b730afc309290bd9fb5305b95"
+                  },
+                  {
+                      "path":  "yolo11n-pose.pt",
+                      "source":  "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n-pose.pt",
+                      "bytes":  6255593,
+                      "sha256":  "869e83fcdffdc7371fa4e34cd8e51c838cc729571d1635e5141e3075e9319dc0"
+                  },
+                  {
+                      "path":  "cavt_daisee.pth",
+                      "source":  "https://drive.google.com/uc?id=1Wwbij0bhZWbP_lqUNWibkOJgW1W6tGA1",
+                      "driveId":  "1Wwbij0bhZWbP_lqUNWibkOJgW1W6tGA1",
+                      "bytes":  1428986819,
+                      "sha256":  "37bdd4180ee101077d12ff992fe6d8b6d2d283e2ab8eae3fa98c38cbc3661844"
+                  },
+                  {
+                      "path":  "cavt_daisee_config.py",
+                      "source":  "https://drive.google.com/uc?id=1j-i3POUBQT_WvD6-83beHTpoxwcq-2Je",
+                      "driveId":  "1j-i3POUBQT_WvD6-83beHTpoxwcq-2Je",
+                      "bytes":  5775,
+                      "sha256":  "62f2522972358b8f8d8e029f42705af90c9ef5e911a72d2918b51e054df4a439"
+                  }
+              ]
+}

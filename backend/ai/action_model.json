@@ -1,0 +1,11 @@
+{
+  "name": "MobileViCLIP-Tiny",
+  "repository": "https://github.com/MCG-NJU/MobileViCLIP",
+  "commit": "3706de2e69d30be05c08f8fb8a4ba0619f76ea43",
+  "appleCommit": "48faa0fea4b08d74188b3841771aca6ff2c92852",
+  "trainedOnSAV": false,
+  "files": [
+    {"path":"mobileviclip_tiny.pt","driveId":"1dhb3v4isnTajbS6nOEYFTHGt_BFH6Ww7","bytes":24104529,"sha256":"2cf9a68177838d5369f450d7898760487a575e1f18c5f7e85f9e618cde9a4f36"},
+    {"path":"mobileclip_s0.pt","source":"https://docs-assets.developer.apple.com/ml-research/datasets/mobileclip/mobileclip_s0.pt","bytes":215934653,"sha256":"809b408eff74f8058843e86a1f92967097d42ba782450e85b8f4867b7f0ca0b7"}
+  ]
+}

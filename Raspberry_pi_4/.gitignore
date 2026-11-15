@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+mediamtx
+mediamtx.local.yml
+backups/
+__pycache__/
+*.py[cod]
+*.log

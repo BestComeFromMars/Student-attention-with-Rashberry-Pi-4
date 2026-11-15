@@ -1,0 +1,27 @@
+# Validated with MediaMTX v1.21.3. Generate mediamtx.local.yml with a private password.
+logLevel: warn
+writeQueueSize: 128
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+api: true
+apiAddress: 127.0.0.1:9997
+authInternalUsers:
+  - user: any
+    ips: [127.0.0.1, '::1']
+    permissions:
+      - action: publish
+        path: camera
+      - action: api
+  - user: studentattention
+    pass: REPLACE_WITH_PRIVATE_PASSWORD
+    permissions:
+      - action: read
+        path: camera
+paths:
+  camera:
+    record: false

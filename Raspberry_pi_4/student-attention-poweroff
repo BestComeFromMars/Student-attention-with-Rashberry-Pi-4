@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+# Fixed command only. Timer survives the controller stopping and allows HTTP acknowledgement.
+exec /usr/bin/systemd-run --unit=student-attention-poweroff --on-active=3s /usr/bin/systemctl poweroff

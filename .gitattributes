@@ -1,0 +1,17 @@
+# Keep source and Raspberry Pi scripts consistent across Windows and Linux.
+* text=auto eol=lf
+
+# Windows command scripts use CRLF when checked out.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Preserve binary assets byte for byte.
+*.jpg -text
+*.jpeg -text
+*.png -text
+*.gif -text
+*.webp -text
+*.ico -text
+*.pdf -text
+*.docx -text
+*.zip -text

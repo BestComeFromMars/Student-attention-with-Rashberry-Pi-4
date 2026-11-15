@@ -1,0 +1,12 @@
+ultralytics==8.3.230
+torch==2.5.1
+torchvision==0.20.1
+mediapipe==0.10.21
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
+numpy==1.26.4
+lap==0.5.12
+einops==0.8.1
+gdown==5.2.0
+onnx==1.17.0
+imageio-ffmpeg==0.6.0

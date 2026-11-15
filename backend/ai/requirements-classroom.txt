@@ -1,0 +1,5 @@
+# Inference/export adapter for the author's YOLOv7 SCB checkpoint only.
+# Torch, ONNX Runtime and OpenCV remain pinned by requirements.lock.txt.
+pandas==2.2.3
+pytz==2025.2
+seaborn==0.13.2

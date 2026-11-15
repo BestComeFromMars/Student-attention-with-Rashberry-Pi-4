@@ -1,0 +1,15 @@
+[Unit]
+Description=Student Attention RTSP relay
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/StudentAttention/Raspberry_pi_4
+ExecStart=/home/pi/StudentAttention/Raspberry_pi_4/mediamtx /home/pi/StudentAttention/Raspberry_pi_4/mediamtx.local.yml
+Restart=always
+RestartSec=2
+MemoryMax=128M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

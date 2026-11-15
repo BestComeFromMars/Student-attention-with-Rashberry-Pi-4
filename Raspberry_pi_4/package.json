@@ -1,0 +1,11 @@
+{
+  "name": "student-attention-raspberry-pi-4",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "start": "node scripts/python.mjs agent.py",
+    "test": "node scripts/python.mjs -m unittest discover -s test -p test_*.py -v"
+  }
+}

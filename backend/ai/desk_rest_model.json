@@ -1,0 +1,13 @@
+{
+  "name": "Community classroom YOLOv8n, desk-rest evidence only",
+  "repository": "https://github.com/rukeshsg/AI-Smart-Classroom-Monitoring-System",
+  "revision": "5ee923f92a6ac04bd3e83566e87567d771b2a8f8",
+  "checkpointUrl": "https://raw.githubusercontent.com/rukeshsg/AI-Smart-Classroom-Monitoring-System/5ee923f92a6ac04bd3e83566e87567d771b2a8f8/models/behavior_yolo.pt",
+  "checkpointSha256": "64057cc20aad3cce9016d6cedea3a2d760f7d76325a6d99e72f795003fa1a76d",
+  "checkpointBytes": 24487143,
+  "cachedOnnxSha256": "4d8538da9fca888f2fb3070771f713005611555f67af304743b908b69b7d9c20",
+  "classes": ["Fighting", "Sleeping", "Using Phone", "Reading", "Writing", "Hand Raising", "Eating"],
+  "activeClass": "Sleeping",
+  "outputMeaning": "Visible desk-rest posture evidence, not proof of sleep or concentration",
+  "accuracyVerified": false
+}
