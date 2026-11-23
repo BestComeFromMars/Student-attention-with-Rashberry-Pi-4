@@ -44,11 +44,22 @@ describe('daily JSON history with bounded portraits',()=>{
   });
   it('retains more than 40 archived people and saves metadata without a face',async()=>{
     const id=randomUUID();await store.create({id,startedAt:start,source:'webcam'});
-    const values=Array.from({length:45},()=>person());
+    const values=Array.from({length:45},(_,index)=>({...person(),trackId:`S${index}`,displayName:`Học sinh ${index}`}));
     await store.update(id,{captures:values.slice(0,30)});await store.update(id,{captures:values.slice(30)});
     expect((await store.get(id)).peopleCount).toBe(45);
     expect((await store.get(id)).eventCount).toBe(45);
     await expect(store.photo(id,values[0].captureId)).rejects.toMatchObject({status:404});
+  });
+  it('keeps only the latest capture and single latest label per student trackId',async()=>{
+    const id=randomUUID(),firstId=randomUUID(),secondId=randomUUID();
+    await store.create({id,startedAt:start,source:'pi'});
+    await store.update(id,{captures:[{...person(firstId,1,1),trackId:'B',displayName:'Học sinh B',labels:['Quay lệch hướng lâu','Cúi đầu'],photo:await photo('#ff0000')}]});
+    await store.update(id,{captures:[{...person(secondId,1,2),trackId:'B',displayName:'Học sinh B',labels:['Gục người'],lastAt:start+5000,photo:await photo('#0000ff')}]});
+    const detail=await store.get(id);
+    expect(detail.peopleCount).toBe(1);
+    expect(detail.captures).toHaveLength(1);
+    expect(detail.captures[0]).toMatchObject({captureId:secondId,trackId:'B',labels:['Gục người'],lastAt:start+5000});
+    expect(await readdir(join(folder,'2026-11-15',id))).toEqual([secondId+'.jpg']);
   });
   it('marks a retained photo as preceding a new warning without writing another JPEG',async()=>{
     const id=randomUUID(),capture=person();await store.create({id,startedAt:start,source:'pi'});
@@ -59,18 +70,40 @@ describe('daily JSON history with bounded portraits',()=>{
     expect((await restarted.get(id)).captures[0]).toMatchObject({count:2,photoRevision:1,photoAt:start,photoBeforeAlert:true});
     expect(await restarted.photo(id,capture.captureId)).toEqual(original);await restarted.close();
   });
-  it('deletes photos and blocks late updates/recreation without reusing daily numbers',async()=>{
+  it('deletes photos, preserves numbers after partial deletion, and resets after clearing the day',async()=>{
     const id=randomUUID(),capture=person();await store.create({id,startedAt:start,source:'pi'});
+    const retained=await store.create({id:randomUUID(),startedAt:start,source:'pi'});
     await store.update(id,{captures:[{...capture,photo:await photo('#008800')}]});
     await store.removeRun(id);
     await expect(readdir(join(folder,'2026-11-15',id))).rejects.toMatchObject({code:'ENOENT'});
     await expect(store.update(id,{captures:[{...capture,revision:2}]})).rejects.toMatchObject({status:410});
     await expect(store.create({id,startedAt:start,source:'pi'})).rejects.toMatchObject({status:410});
-    const next=await store.create({id:randomUUID(),startedAt:start,source:'pi'});expect(next.number).toBe(2);
+    expect((await store.get(retained.id)).number).toBe(2);
+    const next=await store.create({id:randomUUID(),startedAt:start,source:'pi'});expect(next.number).toBe(3);
     await store.removeDay('2026-11-15');expect(await store.listDays()).toEqual([]);
     const restarted=new HistoryStore(folder);
-    expect((await restarted.create({id:randomUUID(),startedAt:start,source:'pi'})).number).toBe(3);
+    expect((await restarted.create({id:randomUUID(),startedAt:start,source:'pi'})).number).toBe(1);
     await expect(restarted.create({id:next.id,startedAt:start,source:'pi'})).rejects.toMatchObject({status:410});await restarted.close();
+  });
+  it('resets when the last run is removed and leaves other days unchanged',async()=>{
+    const last=await store.create({id:randomUUID(),startedAt:start,source:'video'});
+    const otherDay=await store.create({id:randomUUID(),startedAt:start+20000,source:'video'});
+    const removing=store.removeRun(last.id);
+    const starting=store.create({id:randomUUID(),startedAt:start,source:'video'});
+    await removing;
+    expect((await starting).number).toBe(1);
+    expect((await store.listRuns(last.date)).map(run=>run.number)).toEqual([1]);
+    expect((await store.listRuns(otherDay.date)).map(run=>run.id)).toEqual([otherDay.id]);
+    expect((await store.create({id:randomUUID(),startedAt:start+20000,source:'video'})).number).toBe(2);
+  });
+  it('resets an already empty day saved by an earlier version',async()=>{
+    const day=historyDay(start),deleted=randomUUID();
+    await mkdir(join(folder,day),{recursive:true});
+    await writeFile(join(folder,day,'history.json'),JSON.stringify({
+      version:1,date:day,nextRunNumber:8,runs:[],deletedRunIds:[deleted],
+    }));
+    expect((await store.create({id:randomUUID(),startedAt:start,source:'webcam'})).number).toBe(1);
+    await expect(store.create({id:deleted,startedAt:start,source:'webcam'})).rejects.toMatchObject({status:410});
   });
   it('rejects invalid paths, photos and decreasing counts without changing committed data',async()=>{
     await expect(store.listRuns('../../outside')).rejects.toMatchObject({status:400});
@@ -90,8 +123,12 @@ describe('daily JSON history with bounded portraits',()=>{
     await new Promise<void>(yes=>server.listen(0,'127.0.0.1',yes));const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
     try{
       expect((await fetch(origin+'/api/history/days')).status).toBe(200);
-      const id=randomUUID();const response=await fetch(origin+'/api/history/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,startedAt:start,source:'pi'})});
+      const startRun=()=>fetch(origin+'/api/history/runs',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({id:randomUUID(),startedAt:start,source:'pi'})});
+      const response=await startRun();
       expect(response.status).toBe(201);expect((await response.json()).number).toBe(1);
+      expect((await fetch(origin+'/api/history/days/'+historyDay(start),{method:'DELETE'})).status).toBe(204);
+      expect((await (await startRun()).json()).number).toBe(1);
       expect((await fetch(origin+'/api/history/days',{headers:{Origin:'https://example.com'}})).status).toBe(403);
       expect((await fetch(origin+'/api/history/runs/not-an-id')).status).toBe(400);
     }finally{server.closeAllConnections();await new Promise<void>(yes=>server.close(()=>yes()));}

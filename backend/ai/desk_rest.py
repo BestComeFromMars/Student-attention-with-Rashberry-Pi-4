@@ -190,6 +190,57 @@ def attach_rest(tracked,rows,matched,at,width,height):
     return output
 
 
+def _containment(a,b):
+    ax,ay,aw,ah=a;bx,by,bw,bh=b
+    inter=max(0.,min(ax+aw,bx+bw)-max(ax,bx))*max(0.,min(ay+ah,by+bh)-max(ay,by))
+    smallest=min(aw*ah,bw*bh)
+    return inter/smallest if smallest>0 else 0.
+
+
+def match_rest_to_bodies(bodies,observations,evidence,cue_at,at):
+    """Link fresh DeskRest posture cues directly to Tier-1 YOLO+ByteTrack bodies.
+
+    Creates new corroborated rest entries when a slumped-on-desk cue agrees with
+    a live person rectangle, and clears active=False when the student sits up.
+    """
+    if not cue_at or not 0<=at-cue_at<=1800:return {}
+    output={}
+    for body in bodies:
+        old=observations.get(body['id'])
+        if old:
+            output[body['id']]={**old,'active':False,'confidence':0,'observedAt':cue_at}
+    used=set()
+    for cue in sorted(evidence,key=lambda item:item['confidence'],reverse=True):
+        if cue['confidence']<.25:continue
+        candidates=[]
+        for body in bodies:
+            identity=body['id']
+            if identity in used:continue
+            ov=iou(body['box'],cue['box'])
+            ct=_containment(body['box'],cue['box'])
+            if ov>=.30 or (ct>=.65 and ov>=.18):
+                candidates.append((ov+.35*ct,identity,body))
+        candidates.sort(key=lambda item:-item[0])
+        if not candidates or (len(candidates)>1 and candidates[0][0]-candidates[1][0]<.05):continue
+        _,identity,body=candidates[0];used.add(identity)
+        old=observations.get(identity,{})
+        conf=max(.1,float(body.get('confidence',.5)))
+        person_at=old.get('personObservedAt',body.get('seen',body.get('at',at)))
+        output[identity]={
+            **old,
+            'active':True,
+            'confidence':float(cue['confidence']),
+            'personConfidence':old.get('personConfidence',conf),
+            'candidateConfidence':conf,
+            'personObservedAt':person_at,
+            'box':list(cue['box']),
+            'postureBox':list(cue['box']),
+            'observedAt':cue_at,
+            'source':'classroom-appearance + YOLO11n',
+        }
+    return output
+
+
 def refresh_rest(bodies,observations,evidence,cue_at,at):
     """Publish fresh posture evidence independently of a slow person scan.
 

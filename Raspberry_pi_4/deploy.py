@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import quote, urlparse
 
 MEDIA_SHA256 = 'a1621ba39c0aa58430809df28263865e37a75bb4d2f1c87e642ddf5f3f67b19d'
-HOST_KEY = 'SHA256:5I/Lt6HEODLCmyGXRgKTjNm4iWs/3o0VQNg0fXefVJ8'
+HOST_KEY = 'SHA256:j6szWwQ8GMAOxGwgKQmHeHexhCIQXJB0qZtQQUb0i6g'
 ROOT = Path(__file__).resolve().parent
 
 
@@ -72,7 +72,6 @@ def main():
     script = '''set -eu
 stage=/run/student-attention-release
 media=/home/pi/StudentAttention/Raspberry_pi_4/mediamtx
-test -x "$media" || media=/home/pi/StudentAttention/rashberry_pi_4/mediamtx
 test "$(sha256sum "$media" | cut -d ' ' -f 1)" = MEDIA_CHECKSUM
 cp "$media" "$stage/mediamtx"
 chmod 755 "$stage/mediamtx"

@@ -90,7 +90,10 @@ def main():
     parser.add_argument('--labels',type=Path)
     parser.add_argument('--collect-only',action='store_true')
     parser.add_argument('--prepare-only',action='store_true')
+    parser.add_argument('--sample-stride',type=int,default=1)
     args=parser.parse_args()
+    if args.sample_stride < 1:
+        parser.error('--sample-stride must be positive')
     cv2.setNumThreads(1)
     args.output.mkdir(parents=True,exist_ok=True)
     if args.prepare_only:
@@ -108,11 +111,13 @@ def main():
                 ok,image=cap.read()
                 if not ok:break
                 count+=1
+                if (count - 1) % args.sample_stride:
+                    continue
                 if not cv2.imwrite(str(directory/f'{count:06}.jpg'),image,[cv2.IMWRITE_JPEG_QUALITY,84]):raise RuntimeError('Cannot write JPEG')
         finally:cap.release()
         if count!=info['frames']:raise RuntimeError('Incomplete preparation')
         (directory/'metadata.json').write_text(json.dumps(info),encoding='utf-8')
-        print(f'{args.video.name}: prepared {count} full-resolution input frames',flush=True)
+        print(f'{args.video.name}: prepared {(count - 1) // args.sample_stride + 1} of {count} input frames',flush=True)
         return
     ground=defaultdict(list); all_label_status=Counter()
     if args.labels and args.labels.exists():

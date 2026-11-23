@@ -14,7 +14,7 @@ describe('Pi video protocol with the current observation API',()=>{
     const waiting=new Promise<void>(resolve=>{entered=resolve;});
     const result=new Promise<Awaited<ReturnType<NonNullable<InferenceEngine['detectFrame']>>>>(resolve=>{finish=resolve;});
     const engine:InferenceEngine={ready:true,close:async()=>{},detect:async()=>[],detectFrame:async()=>{entered();return result;}};
-    const pi=new PiSource(),sessions=new Sessions(),id=sessions.create();
+    const pi=new PiSource(),sessions=new Sessions(),id=sessions.create({...defaultObservationSettings(),objectsEnabled:true});
     const server=createServer(createApp({engine,pi,sessions}));
     await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
     const origin='http://127.0.0.1:'+(server.address() as {port:number}).port;

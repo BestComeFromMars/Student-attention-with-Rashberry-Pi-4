@@ -71,7 +71,9 @@ export class PostureBehavior {
     if(!left||!right)return null;
     const shoulder=middle(left,right),span=distance(left,right);
     if(span<.02)return null;
-    const lh=point(11),rh=point(12),le=point(7),re=point(8),nose=point(0);
+    const lh=point(11),rh=point(12),le=point(7),re=point(8);
+    const headCandidates=[point(0),point(1),point(2),point(3),point(4)].filter((p):p is Point=>p!==null);
+    const nose=point(0)??(headCandidates.length?headCandidates.reduce((a,b)=>a.y>=b.y?a:b):null);
     let anchor:Point,mode:Features['mode'];
     if(lh&&rh){anchor=middle(lh,rh);mode='hips';}
     else if(le&&re){

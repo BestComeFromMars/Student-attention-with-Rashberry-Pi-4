@@ -21,29 +21,24 @@ class FaceMeasurementTests(unittest.TestCase):
         self.assertEqual(rest['observedAt'],1700);self.assertEqual(rest['personObservedAt'],1000)
         self.assertTrue(rest['temporalPerson']);self.assertEqual(rest['confidence'],.45)
 
-    def test_folded_body_starts_and_keeps_its_id_when_auxiliary_results_are_ahead_of_people(self):
-        import json,torch
-        from ultralytics.engine.results import Boxes
-        from ultralytics.trackers.byte_tracker import BYTETracker
-        engine=Perception.__new__(Perception);engine.lock=threading.Lock();engine.device='cpu';engine.timings={};engine.person_limit=40
-        frame=np.zeros((500,500,3),np.uint8)
-        raw=[torch.tensor([[100,100,240,200,.07,0]]),torch.tensor([[100,100,240,310,.04,0]]),torch.tensor([[100,100,240,250,.05,0]])]
-        engine.people=SimpleNamespace(predict=Mock(side_effect=[[SimpleNamespace(boxes=Boxes(rows,(500,500)))] for rows in raw]))
-        args=SimpleNamespace(track_high_thresh=.2,track_low_thresh=.1,new_track_thresh=.2,track_buffer=30,match_thresh=.8,fuse_score=True)
-        state=dict(tracker=BYTETracker(args,frame_rate=5),peopleAt=0,bodyHistory=[],restHistory=[
-            (1000,[dict(box=[.2,.2,.28,.2],confidence=.6)]),
-            (1700,[dict(box=[.205,.2,.28,.2],confidence=.55)]),(3000,[])])
-        engine._people(state,frame,1000)
-        self.assertFalse(state['bodies'],'one weak person/posture pair cannot start a body')
-        engine._people(state,frame,1700)
-        self.assertEqual(len(state['bodies']),1)
-        identity=state['bodies'][0]['id']
-        self.assertTrue(state['restPersonCandidates'][0]['confirmed'])
-        engine._people(state,frame,2300)
-        self.assertEqual([b['id'] for b in state['bodies']],[identity])
-        self.assertEqual(engine.timings['restEvidenceAgeMs'],600)
-        self.assertLess(state['restObservations'][identity]['personConfidence'],.1)
-        json.dumps(state['restObservations'],allow_nan=False)
+    def test_folded_body_metadata_refreshes_from_tier1_bodies_and_rest_history(self):
+        import json
+        from collections import deque
+        engine = Perception.__new__(Perception)
+        engine.lock = threading.Lock()
+        engine.memory_budget = SimpleNamespace(update=lambda _: 100)
+        engine.sessions = {}
+        engine.actions = SimpleNamespace(observe=Mock())
+        engine.latest = {}; engine.scene_latest = {}; engine.pose_latest = {}; engine.rest_latest = {}
+        state = dict(bodies=[], bodyHistory=deque(maxlen=20), restHistory=deque([
+            (1000, [dict(box=[.2, .2, .28, .2], confidence=.6)]),
+        ], maxlen=8), restObservations={1: dict(active=True, confidence=.6, personConfidence=.5, observedAt=1000)})
+        engine._state = Mock(return_value=state)
+        bodies = [dict(id=1, at=1200, seen=1200, confidence=.5, box=[.2, .2, .28, .22])]
+        engine.submit('one', np.zeros((100, 100, 3), np.uint8), [], 1200, bodies=bodies)
+        self.assertEqual([b['id'] for b in state['bodies']], [1])
+        self.assertTrue(state['restObservations'][1]['active'])
+        json.dumps(state['restObservations'], allow_nan=False)
 
     def test_object_geometry_is_published_while_interaction_analysis_is_blocked(self):
         engine=Perception.__new__(Perception);engine.lock=threading.Lock();engine.stop=threading.Event()
@@ -67,27 +62,23 @@ class FaceMeasurementTests(unittest.TestCase):
         finally:engine.stop.set();release.set();worker.join(2)
 
     def test_person_ids_survive_adaptive_upload_resolution_without_reinitializing_bytetrack(self):
-        import torch
-        from ultralytics.engine.results import Boxes
-        from ultralytics.trackers.byte_tracker import BYTETracker
-        engine=Perception.__new__(Perception);engine.lock=threading.Lock();engine.device='cpu';engine.timings={};engine.person_limit=40
-        engine.desk_rest=SimpleNamespace(predict=Mock(side_effect=AssertionError('auxiliary posture inference must not block people')))
-        def prediction(frame,**kwargs):
-            h,w=frame.shape[:2]
-            rows=torch.tensor([[.1*w,.1*h,.3*w,.9*h,.9,0],[.6*w,.1*h,.9*w,.9*h,.9,0]])
-            return [SimpleNamespace(boxes=Boxes(rows,(h,w)))]
-        engine.people=SimpleNamespace(predict=prediction)
-        args=SimpleNamespace(track_high_thresh=.2,track_low_thresh=.1,new_track_thresh=.2,track_buffer=30,match_thresh=.8,fuse_score=True)
-        state=dict(tracker=BYTETracker(args,frame_rate=5),peopleAt=0,bodyHistory=[])
-        first=None
-        for n,(w,h) in enumerate([(1280,720),(1920,1080),(1280,720),(1920,1080),(960,540),(1280,720)]):
-            engine._people(state,np.zeros((h,w,3),np.uint8),1000+n*400)
-            ids=[b['id'] for b in state['bodies']]
-            if first is None:first=ids
-            self.assertEqual(ids,first,'changing JPEG resolution must not replace the same two people')
-            self.assertEqual(len(ids),2)
-            self.assertAlmostEqual(state['bodies'][0]['box'][0],.1,places=5)
-            self.assertAlmostEqual(state['bodies'][1]['box'][2],.3,places=5)
+        from person_tracking import PersonTracking
+        class AdaptiveDetector:
+            def predict_rows(self, frame):
+                h, w = frame.shape[:2]
+                return np.asarray([[.1*w, .1*h, .3*w, .9*h, .9, 0], [.6*w, .1*h, .9*w, .9*h, .9, 0]], dtype=np.float32)
+        tracker = PersonTracking()
+        detector = AdaptiveDetector()
+        first = None
+        for n, (w, h) in enumerate([(1280, 720), (1920, 1080), (1280, 720), (1920, 1080), (960, 540), (1280, 720)]):
+            bodies = tracker.detect(detector, np.zeros((h, w, 3), np.uint8), 1000 + n * 150)
+            ids = [b['id'] for b in bodies]
+            if first is None:
+                first = ids
+            self.assertEqual(ids, first, 'changing JPEG resolution must not replace the same two people')
+            self.assertEqual(len(ids), 2)
+            self.assertAlmostEqual(bodies[0]['box'][0], .1, places=5)
+            self.assertAlmostEqual(bodies[1]['box'][2], .3, places=5)
     def test_object_regions_follow_the_same_unique_body_as_the_face(self):
         engine=Perception.__new__(Perception)
         engine.timings={}
@@ -145,7 +136,7 @@ class FaceMeasurementTests(unittest.TestCase):
         self.assertNotIn('refinement', observation)
 
     def test_small_face_is_confirmed_without_enabling_behavior(self):
-        observation = self.measure(box=[.25, .25, .08, .1])
+        observation = self.measure(box=[.25, .25, .06, .08])
         self.assertIs(observation['facePresent'], True)
         self.assertIs(observation['valid'], False)
 
@@ -194,18 +185,20 @@ class FaceMeasurementTests(unittest.TestCase):
         engine._publish_pose(state,dict(poseRegions=[],headings=[],poseAt=1100),1100)
         self.assertNotIn('bodyPose',engine.body_hints('one')[0]['observation'])
 
-    def test_early_body_submission_does_not_clear_face_or_object_work(self):
-        engine=Perception.__new__(Perception);engine.lock=threading.Lock()
-        engine.memory_budget=SimpleNamespace(update=lambda _:40);engine.sessions={}
-        state=dict(bodies=[]);engine._state=Mock(return_value=state)
-        engine.actions=SimpleNamespace(observe=Mock())
-        engine.latest={'one':'old-face-job'};engine.scene_latest={'one':'old-scene-job'}
-        engine.body_latest={};engine.pose_latest={};engine.rest_latest={}
-        engine.submit('one',object(),[],1000,body_only=True)
-        self.assertEqual(engine.latest['one'],'old-face-job')
-        self.assertEqual(engine.scene_latest['one'],'old-scene-job')
-        self.assertEqual(engine.pose_latest['one'][1],1000)
-        engine.actions.observe.assert_not_called()
+    def test_tier2_submit_forwards_bodies_to_pose_rest_and_actions(self):
+        from collections import deque
+        engine = Perception.__new__(Perception); engine.lock = threading.Lock()
+        engine.memory_budget = SimpleNamespace(update=lambda _: 100); engine.sessions = {}
+        state = dict(bodies=[], bodyHistory=deque(maxlen=20), restHistory=deque(maxlen=8), restObservations={})
+        engine._state = Mock(return_value=state)
+        engine.actions = SimpleNamespace(observe=Mock())
+        engine.latest = {}; engine.scene_latest = {}; engine.pose_latest = {}; engine.rest_latest = {}
+        bodies = [dict(id=7, at=1000, seen=1000, box=[.1, .1, .2, .5])]
+        engine.submit('one', object(), [], 1000, bodies=bodies)
+        self.assertEqual(state['bodies'], bodies)
+        self.assertEqual(engine.pose_latest['one'][1], 1000)
+        self.assertEqual(engine.rest_latest['one'][1], 1000)
+        engine.actions.observe.assert_called_once()
 
     def test_object_ownership_never_uses_wrists_from_a_future_pose_frame(self):
         engine=Perception.__new__(Perception);engine.timings={};engine._hands_for=Mock(return_value=[])

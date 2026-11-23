@@ -18,7 +18,8 @@ const piController = process.env.PI_CONTROL_URL ? new PiController(pi, {
   rtspUrl: process.env.PI_RTSP_URL ?? '', ready: () => engine.ready,
 }) : undefined;
 const history=new HistoryStore(process.env.HISTORY_DIR||fileURLToPath(new URL('../../uploads/detection-history/',import.meta.url)));
-const server = createServer(createApp({ engine, pi, piToken: process.env.PI_TOKEN, piController,history }));
+const playbackDirectory = fileURLToPath(new URL('../storage/demo-video/', import.meta.url));
+const server = createServer(createApp({ engine, pi, piToken: process.env.PI_TOKEN, piController, history, playbackDirectory }));
 let closing = false;
 async function shutdown() {
   if (closing) return;

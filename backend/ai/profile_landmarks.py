@@ -18,13 +18,28 @@ def profile_yaw(face, minimum=30):
         return None
     eyes = anchors[1]-anchors[0]
     span2 = float(eyes@eyes)
-    if span2 < 100:
+    if span2 < 36:
         return None
     offset = float((anchors[2]-(anchors[0]+anchors[1])/2)@eyes/span2)
-    # This is a signed orientation proxy from YuNet anchors, not a calibrated
+    # This is a signed orientation proxy from SCRFD/YuNet anchors, not a calibrated
     # head angle. It is used only when the full pose model is unavailable.
     yaw = float(np.clip(offset*90, -75, 75))
     return yaw if abs(yaw) >= minimum else None
+
+
+def profile_pitch(face):
+    anchors = np.asarray(face.get('anchors', []), np.float64)
+    if anchors.shape != (5, 2) or not np.isfinite(anchors).all():
+        return None
+    eye_mid = (anchors[0] + anchors[1]) / 2.0
+    mouth_mid = (anchors[3] + anchors[4]) / 2.0
+    vertical = float(mouth_mid[1] - eye_mid[1])
+    if vertical < 4.0:
+        return None
+    nose_ratio = float((anchors[2][1] - eye_mid[1]) / vertical)
+    # Neutral upright face places nose around ~0.46 of eye-to-mouth vertical span;
+    # bowing the head pushes the nose down toward the mouth (> 0.60).
+    return float(np.clip((nose_ratio - 0.46) * 115.0, -45.0, 60.0))
 
 
 def matched_profile(face, points, width, height):

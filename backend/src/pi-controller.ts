@@ -67,6 +67,7 @@ export class PiController {
   private fetcher: typeof fetch;
   private started = false;
   private reportedOffline = false;
+  private consecutiveFailures = 0;
   constructor(private source: PiSource, private options: Options) {
     const url = new URL(options.url);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
@@ -74,7 +75,7 @@ export class PiController {
     this.fetcher = options.fetcher ?? fetch;
   }
   status(): PiDeviceStatus {
-    const fresh = this.device.deviceOnline && Date.now() - this.receivedStatusAt < 7000;
+    const fresh = this.device.deviceOnline && Date.now() - this.receivedStatusAt < 9000;
     return { ...this.device, deviceOnline: fresh, state: fresh ? this.device.state : 'offline' };
   }
   private serialize<T>(action: () => Promise<T>): Promise<T> {
@@ -82,19 +83,31 @@ export class PiController {
     this.queue = result.catch(() => {});
     return result;
   }
-  private async request(path: string, body: object = {}) {
+  private async sendOnce(path: string, body: object) {
+    const response = await this.fetcher(await piControlUrl(path, this.options.url), {
+      method: 'POST', headers: { Authorization: 'Bearer ' + this.options.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(4000)]),
+    });
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    const states = ['off', 'waiting_backend', 'starting', 'streaming', 'reconnecting', 'shutting_down'];
+    if (!states.includes(data.state) || typeof data.desired !== 'boolean' || typeof data.camera_released !== 'boolean' ||
+      typeof data.boot_id !== 'string' || !Number.isInteger(data.camera_generation)) throw new Error();
+    return data;
+  }
+  private async request(path: string, body: object = {}, tolerant = false) {
     if (this.closed) throw new HttpError(503, 'Backend đang dừng.');
-    let response: Response;
     try {
-      response = await this.fetcher(await piControlUrl(path, this.options.url), {
-        method: 'POST', headers: { Authorization: 'Bearer ' + this.options.token, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body), signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(5000)]),
-      });
-      if (!response.ok) throw new Error();
-      const data = await response.json();
-      const states = ['off', 'waiting_backend', 'starting', 'streaming', 'reconnecting', 'shutting_down'];
-      if (!states.includes(data.state) || typeof data.desired !== 'boolean' || typeof data.camera_released !== 'boolean' ||
-        typeof data.boot_id !== 'string' || !Number.isInteger(data.camera_generation)) throw new Error();
+      let data: Awaited<ReturnType<PiController['sendOnce']>>;
+      try {
+        data = await this.sendOnce(path, body);
+      } catch {
+        if (this.closed) throw new Error();
+        // Refresh cached .local IPv4 resolution once before declaring failure.
+        forgetPiAddress(this.options.url);
+        data = await this.sendOnce(path, body);
+      }
+      this.consecutiveFailures = 0;
       const changed = data.boot_id !== this.device.bootId || data.camera_generation !== this.device.generation;
       const previous = this.device;
       this.device = { deviceOnline: true, state: data.state, desired: data.desired,
@@ -115,10 +128,16 @@ export class PiController {
       if (changed || data.state !== 'streaming') this.stopReader();
       return this.status();
     } catch {
+      this.consecutiveFailures += 1;
+      forgetPiAddress(this.options.url);
+      // Tolerate a single transient heartbeat timeout while already connected so
+      // brief Wi-Fi jitter does not flicker the UI or drop the RTSP reader.
+      if (tolerant && this.device.deviceOnline && this.consecutiveFailures < 2 && Date.now() - this.receivedStatusAt < 8000) {
+        return this.status();
+      }
       if (!this.closed && (!this.reportedOffline || this.device.deviceOnline)) log('PI',
         'Mất kết nối Raspberry Pi; tự thử lại. Webcam sẽ dừng khi heartbeat hết hạn.', 'warn');
       this.reportedOffline = true;
-      forgetPiAddress(this.options.url);
       this.device = { ...this.device, deviceOnline: false, state: 'offline', error: 'Chưa liên lạc được với Raspberry Pi; đang thử lại.' };
       this.stopReader();
       throw new HttpError(503, 'Không gửi được lệnh tới Raspberry Pi. Kiểm tra nguồn điện, Wi-Fi và cấu hình thiết bị.');
@@ -133,7 +152,7 @@ export class PiController {
     if (this.closed) return;
     try {
       const previousBoot = this.device.bootId;
-      await this.serialize(() => this.request('/heartbeat', { ready: !this.poweringOff && this.options.ready() }));
+      await this.serialize(() => this.request('/heartbeat', { ready: !this.poweringOff && this.options.ready() }, true));
       if (this.poweringOff && previousBoot && this.device.bootId !== previousBoot) this.poweringOff = false;
       if (!this.closed && !this.poweringOff && this.device.state === 'streaming' && this.options.ready()) {
         if (this.child && Date.now() - this.lastFrame > 7000) this.stopReader();

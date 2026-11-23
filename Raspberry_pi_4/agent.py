@@ -52,6 +52,22 @@ class Camera:
             temporary.write_text(json.dumps({'desired': self.desired, 'generation': self.generation}))
             temporary.replace(self.state_file)
 
+    @staticmethod
+    def resolve_device():
+        configured = os.environ.get('CAMERA_DEVICE', '/dev/video0')
+        if os.name == 'nt' or Path(configured).exists():
+            return configured
+        by_id = Path('/dev/v4l/by-id')
+        if by_id.is_dir():
+            for candidate in sorted(by_id.glob('*-video-index0')):
+                if candidate.exists():
+                    return str(candidate)
+        for index in range(5):
+            candidate = Path(f'/dev/video{index}')
+            if candidate.exists():
+                return str(candidate)
+        return configured
+
     def command(self):
         return ['ffmpeg', '-hide_banner', '-loglevel', 'warning', '-nostdin',
                 # Bound MJPEG decode/conversion workers instead of waking all CPU
@@ -59,7 +75,7 @@ class Camera:
                 '-filter_threads', '1', '-thread_queue_size', '4', '-threads:v', '1',
                 '-f', 'v4l2', '-input_format', 'mjpeg',
                 '-video_size', '1280x720', '-framerate', str(self.input_fps), '-i',
-                os.environ.get('CAMERA_DEVICE', '/dev/video0'), '-an', '-threads', '1',
+                self.resolve_device(), '-an', '-threads', '1',
                 # This webcam offers 25/30 FPS only. Drop frames before the
                 # color conversion/hardware encoder, preserving all face pixels.
                 '-vf', 'fps='+str(self.fps),
@@ -142,7 +158,8 @@ class Camera:
             if self.shutting_down or not self.desired or not self.backend_ready or self.clock() >= self.lease_until:
                 self.stop_capture()
                 return
-            running = self.process is not None and self.process.poll() is None
+            had_process = self.process is not None
+            running = had_process and self.process.poll() is None
             if running and self.clock() - self.last_progress < 6:
                 return
             if self.clock() < self.retry_at:
@@ -157,8 +174,8 @@ class Camera:
             except OSError:
                 self.error = 'Không mở được webcam. Kiểm tra thiết bị và FFmpeg; đang thử lại.'
             self.failures += 1
-            self.retry_at = self.clock() + min(8, 2 ** min(self.failures - 1, 3))
-            if running:
+            self.retry_at = self.clock() + min(4, 2 ** min(self.failures - 1, 2))
+            if had_process and self.error is None:
                 self.error = 'Luồng camera bị gián đoạn; đang phục hồi.'
 
     def status(self):

@@ -110,6 +110,22 @@ class CameraTest(unittest.TestCase):
         self.camera.recover()
         self.assertEqual(self.spawn.call_count, 2)
 
+    def test_fast_exiting_ffmpeg_surfaces_reconnecting_and_retries(self):
+        exited = Mock()
+        exited.poll.return_value = 1
+        exited.stdout = io.BytesIO()
+        self.spawn.side_effect = [exited, self.process]
+        self.camera.start()
+        self.camera.heartbeat(True)
+        self.camera.recover()
+        self.now += 1.1
+        self.camera.recover()
+        self.assertEqual(self.spawn.call_count, 2)
+        self.assertEqual(self.camera.status()['state'], 'reconnecting')
+        self.camera.has_frames = True
+        self.camera.error = None
+        self.assertEqual(self.camera.status()['state'], 'streaming')
+
     def test_shutdown_is_once_and_prevents_restart(self):
         self.camera.start()
         self.camera.shutdown()

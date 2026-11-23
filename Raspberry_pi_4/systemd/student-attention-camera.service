@@ -1,7 +1,8 @@
 [Unit]
 Description=Student Attention USB camera controller
-Wants=student-attention-media.service NetworkManager.service
-After=student-attention-media.service network.target
+Wants=student-attention-media.service NetworkManager.service network-online.target
+After=student-attention-media.service network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 User=pi
@@ -17,7 +18,7 @@ Restart=always
 RestartSec=2
 KillMode=control-group
 TimeoutStopSec=10
-MemoryMax=256M
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target

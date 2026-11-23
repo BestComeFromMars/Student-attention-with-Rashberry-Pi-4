@@ -2,6 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {AttentionEvaluator} from '../src/attention.js';
 import {StudentTracker} from '../src/tracker.js';
 import {HeadMotion} from '../src/head-motion.js';
+import {defaultObservationSettings} from '../src/observation-settings.js';
 import type {StudentTrack} from '../src/types.js';
 
 function person(at:number,yaw:number|null=0,identity=7):StudentTrack {
@@ -104,7 +105,8 @@ describe('observation-only behavior evaluation',()=>{
     expect(new AttentionEvaluator().evaluate([person(2800,35)],2800)[0].alerts).toEqual([]);
   });
   it('uses lower confirmation durations but never accumulates repeated timestamps',()=>{
-    const evaluator=new AttentionEvaluator();
+    const settings=defaultObservationSettings();settings.objectsEnabled=true;settings.enabled.phone=true;
+    const evaluator=new AttentionEvaluator(settings);
     const sample=(at:number,now=at)=>{
       const input=person(at);Object.assign(input.observation!,{phoneHeld:true,eyeAspectRatio:.05,pitchDeg:20});
       return evaluator.evaluate([input],now)[0];
@@ -124,15 +126,15 @@ describe('observation-only behavior evaluation',()=>{
     expect(evaluator.evaluate([person(2100,null)],2100)[0].alerts).toContainEqual(expect.objectContaining({type:'eyes_closed',held:true,expiresAt:6800}));
     expect(evaluator.evaluate([person(6900,null)],6900)[0].alerts).toEqual([]);
   });
-  it('requires four actual mouth cycles over the more conservative default duration',()=>{
+  it('requires three actual mouth cycles over the default duration',()=>{
     const evaluator=new AttentionEvaluator();
     let result:StudentTrack;
-    for(const [at,mouth] of [[1000,.05],[1200,.15],[1500,.05],[1700,.15],[2100,.05],[2400,.15],[2800,.05],[3100,.15],[3500,.15],[3800,.05]]){
+    for(const [at,mouth] of [[1000,.05],[1200,.15],[1500,.05],[1700,.15],[2100,.05],[2400,.15],[2800,.05]]){
       const input=person(at);input.observation!.mouthOpenRatio=mouth;
       result=evaluator.evaluate([input],at)[0];
-      if(at<3800)expect(result.signals!.find(s=>s.type==='talking')!.state).not.toBe('confirmed');
+      if(at<2800)expect(result.signals!.find(s=>s.type==='talking')!.state).not.toBe('confirmed');
     }
-    expect(result!.signals!.find(s=>s.type==='talking')).toMatchObject({state:'confirmed',cycles:4,durationMs:2600});
+    expect(result!.signals!.find(s=>s.type==='talking')).toMatchObject({state:'confirmed',cycles:3,durationMs:1600});
   });
   it('keeps the same ID when the face vanishes and a new face geometry returns on the same body',()=>{
     const tracker=new StudentTracker();

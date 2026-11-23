@@ -131,20 +131,27 @@ describe('teacher controls', () => {
     expect(screen.getByRole('option', { name: /Raspberry Pi 4.*Chưa tìm thấy/ }).querySelector('.camera-status-missing')).not.toBeNull();
   });
   it('confirms Pi poweroff without stopping an active computer webcam', async () => {
+    let piOffline = false;
     vi.mocked(fetch).mockImplementation(async url => ({ ok: true, json: async () => String(url) === '/api/pi/status'
-      ? { deviceOnline: true, state: 'off', error: null }
+      ? { deviceOnline: !piOffline, state: piOffline ? 'offline' : 'off', error: null }
       : { status: 'ok', modelReady: true, detector: 'classroom' } }) as Response);
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     await act(async () => { render(<App />); });
+    expect(screen.queryByLabelText('Demo video')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Ngưỡng nhận diện' }).textContent).toBe('');
+    expect(screen.getByRole('button', { name: 'Tắt Raspberry Pi' }).textContent).toBe('');
     await startComputerCamera();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Tắt Raspberry Pi' })); });
     expect(window.confirm).toHaveBeenCalledOnce();
     expect(fetch).toHaveBeenCalledWith('/api/pi/shutdown', expect.objectContaining({ method: 'POST', body: '{"confirm":true}' }));
     expect(stop).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Tắt camera' })).toBeDefined();
-    expect(screen.getByRole('button',{name:'Pi đang tắt · 20s'})).toBeDefined();
+    expect(screen.getByRole('button',{name:'Pi đang tắt · 20s'}).textContent).toContain('20s');
     await act(async()=>{await vi.advanceTimersByTimeAsync(1000);});
-    expect(screen.getByRole('button',{name:'Pi đang tắt · 19s'})).toBeDefined();
+    expect(screen.getByRole('button',{name:'Pi đang tắt · 19s'}).textContent).toContain('19s');
+    piOffline = true;
+    await act(async()=>{await vi.advanceTimersByTimeAsync(22000);});
+    expect(screen.getByRole('button',{name:'An toàn rút điện'}).textContent).toContain('An toàn rút điện');
   });
   it('keeps the camera button functional when effects are replayed by development refresh or StrictMode', async () => {
     await act(async () => { render(<StrictMode><App /></StrictMode>); });

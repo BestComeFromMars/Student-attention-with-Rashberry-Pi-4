@@ -1,8 +1,8 @@
-﻿import type { BehaviorSignal, StudentTrack } from './types.js';
+import type { BehaviorSignal, StudentTrack } from './types.js';
 
 import { HeadMotion } from './head-motion.js';
 import { FacialBehavior } from './facial-behavior.js';
-import type { BehaviorAlert } from './types.js';
+import type { BehaviorAlert, FaceObservation } from './types.js';
 import { visibleObjects } from './object-context.js';
 import { ActionEvaluator } from './actions.js';
 import {PostureBehavior} from './posture-behavior.js';
@@ -15,6 +15,7 @@ interface History {
   owner?: number;
   timers: Map<string, Timer>;
   face: FacialBehavior;
+  yawnSource?: FaceObservation['mouthSource'];
   headDown: boolean;
   head: HeadMotion;
   posture:PostureBehavior;
@@ -77,27 +78,28 @@ export class AttentionEvaluator {
       const actions=this.actions.evaluate(track.id,track.status==='visible'?track.actions?.map(action=>({...action})):track.actions?.map(action=>({...action,state:'unavailable'})),now);
       const sleep=this.settings.enabled.upper_body_slumped&&actions.find(action=>action.type==='slumped_on_desk'&&action.state==='confirmed');
       if(sleep&&(!history.actionAlert||sleep.observedAt>history.actionAlert.observedAt))history.actionAlert={type:sleep.type,label:sleep.label,observedAt:sleep.observedAt,expiresAt:now+ALERT_HOLD_MS};
-      if(history.actionAlert&&now>=history.actionAlert.expiresAt)history.actionAlert=undefined;
+      if(!sleep||(history.actionAlert&&now>=history.actionAlert.expiresAt))history.actionAlert=undefined;
       const observation = track.observation;
-      const objects = visibleObjects(track, now);
-      const unresolvedObject = objects.some(object => object.interaction === false && object.kind !== 'book');
+      const objectsEnabled=this.settings.objectsEnabled;
+      const objects = objectsEnabled?visibleObjects(track, now):[];
+      const unresolvedObject = objectsEnabled&&objects.some(object => object.interaction === false && object.kind !== 'book');
       const faceAt = observation?.observedAt ?? now;
       const objectsAt = observation?.objectsAt ?? faceAt;
       const reliableImage = observation?.quality?.usable !== false;
-      const faceValid = track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.valid === true && usable(faceAt)
+      const faceValid = reliableImage && track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.valid === true && usable(faceAt)
         && now-faceAt <= GAP && faceAt <= now+1000 &&
-        (observation.facePixels === undefined || (usable(observation.facePixels) && observation.facePixels >= 40));
-      const mouthValid = faceValid || (track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.mouthValid === true &&
+        (observation.facePixels === undefined || (usable(observation.facePixels) && observation.facePixels >= 28));
+      const mouthValid = faceValid || (reliableImage && track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.mouthValid === true &&
         usable(faceAt) && now-faceAt <= GAP && faceAt <= now+1000 &&
-        usable(observation.facePixels) && observation.facePixels >= 40);
+        usable(observation.facePixels) && observation.facePixels >= 28);
       const pitch = observation?.pitchDeg;
-      const poseValid=faceValid||mouthValid||(track.status==='visible'&&track.faceVisibility!=='unavailable'&&
+      const poseValid=faceValid||mouthValid||(reliableImage&&track.status==='visible'&&track.faceVisibility!=='unavailable'&&
         observation?.headPoseValid===true&&usable(faceAt)&&now-faceAt<=GAP&&faceAt<=now+1000);
       const cues = history.face.update(observation, faceAt, faceValid, mouthValid);
       const thresholds=this.settings.thresholds;
       if (poseValid && usable(pitch)) history.headDown = pitch >= (thresholds.headDownPitchDeg-(history.headDown?2:0));
       else history.headDown = false;
-      const reading = this.sample(history, 'book_context', track.status === 'visible'
+      const reading = this.sample(history, 'book_context', objectsEnabled && track.status === 'visible'
         ? observation?.bookInteraction === true && observation?.phoneHeld !== true && observation?.laptopInteraction !== true
         : null, objectsAt, now, 1000, OBJECT_GAP);
       const studyAction=actions.some(action=>(action.type==='read'||action.type==='take_notes')&&action.state==='confirmed');
@@ -108,29 +110,37 @@ export class AttentionEvaluator {
           type==='phone'||type==='laptop'?OBJECT_GAP:GAP) });
       };
       add('eyes_closed', cues.eyeClosed, faceAt, thresholds.eyesClosedMs);
-      add('phone', track.status === 'visible' ? observation?.phoneHeld ?? null : null, objectsAt, thresholds.phoneMs);
+      add('phone', objectsEnabled && track.status === 'visible' ? observation?.phoneHeld ?? null : null, objectsAt, thresholds.phoneMs);
       add('head_down', poseValid && usable(pitch) ? history.headDown : null, faceAt, thresholds.headDownMs);
+      if(cues.yawn!==null&&history.yawnSource!==observation?.mouthSource){
+        history.yawnSource=observation?.mouthSource;
+        history.timers.delete('yawn');
+      }
       add('yawn', cues.yawn, faceAt, thresholds.yawnMs);
 
       signals.push({ type: 'talking', label: LABELS.talking,
         ...cues.talking, cycles: cues.mouthCycles });
-      add('laptop', track.status === 'visible' ? observation?.laptopInteraction ?? null : null, objectsAt, thresholds.laptopMs);
+      add('laptop', objectsEnabled && track.status === 'visible' ? observation?.laptopInteraction ?? null : null, objectsAt, thresholds.laptopMs);
       const faceHeading = poseValid && usable(observation?.yawDeg);
-      const bodyHeading = track.status === 'visible' && usable(observation?.headYaw)&&Math.abs(observation!.headYaw!)<=1;
-      const headAt = faceHeading ? faceAt : observation?.headObservedAt ?? now;
-      const yaw=faceHeading?observation!.yawDeg!:bodyHeading?bodyYawDegrees(observation!.headYaw!):null;
+      const bodyAt = observation?.headObservedAt;
+      const bodyHeading = track.status === 'visible' && usable(observation?.headYaw) && Math.abs(observation.headYaw)<=1 &&
+        usable(bodyAt) && bodyAt<=now && now-bodyAt<=GAP;
+      // A cached face pose should not mask newer body evidence as the face turns out of view.
+      const useFaceHeading = faceHeading && (!bodyHeading || bodyAt-faceAt<750);
+      const headAt = useFaceHeading ? faceAt : bodyHeading ? bodyAt : now;
+      const yaw=useFaceHeading?observation!.yawDeg!:bodyHeading?bodyYawDegrees(observation!.headYaw!):null;
+      const headSource=useFaceHeading?observation?.mouthSource==='profile_roi'?'face_anchors':'face_pose':'body_keypoints';
       signals.push(history.head.update(track.status !== 'visible'||yaw===null ? null : Math.max(-1,Math.min(1,(yaw-configuredCameraYaw())/90)), headAt, now,
-        faceHeading ? observation?.mouthSource === 'profile_roi' ? 'face_anchors' : 'face_pose' : observation?.headSource));
+        yaw===null?undefined:headSource));
       const posture=history.posture.update({
-        heading:track.status!=='visible'?null:faceHeading?{value:observation!.yawDeg!,source:observation?.mouthSource??'face_pose',at:headAt}
-          :bodyHeading?{value:yaw!,source:'body_keypoints',at:headAt}:null,
+        heading:yaw===null?null:{value:yaw,source:headSource,at:headAt},
         pose:track.status==='visible'?observation?.bodyPose:undefined,pitch:faceValid?pitch:null,
         deskRest:track.status==='visible'?observation?.deskRest:undefined,
         smile:mouthValid&&usable(observation?.mouthSmileLeft)&&usable(observation?.mouthSmileRight)?
           {left:observation!.mouthSmileLeft!,right:observation!.mouthSmileRight!,at:faceAt}:null,
       },now);
       signals.push(...posture.signals);
-      for(const signal of signals)if(!this.settings.enabled[signal.type]){
+      for(const signal of signals)if(!this.settings.enabled[signal.type]||(!objectsEnabled&&(signal.type==='phone'||signal.type==='laptop'))){
         signal.state='unavailable';signal.durationMs=0;
       }
       const confirmed = signals.filter(signal => signal.state === 'confirmed' && !(signal.type === 'head_down' && studying))
@@ -145,6 +155,9 @@ export class AttentionEvaluator {
           history.alerts.set(signal.type, { type: signal.type, label: signal.label,
             observedAt, expiresAt: now + ALERT_HOLD_MS, held: false });
         }
+      }
+      for (const signal of signals) {
+        if (signal.state === 'clear' || signal.state === 'pending') history.alerts.delete(signal.type);
       }
       for (const [type, alert] of history.alerts) if (now >= alert.expiresAt) history.alerts.delete(type);
       const alerts = [...history.alerts.values()].map(alert => ({ ...alert,

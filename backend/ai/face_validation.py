@@ -130,11 +130,11 @@ def face_tracking_state(face, confirmed, accepted_at, now):
     # still removes it immediately. Repeated misses cannot renew visualAt.
     if (not face.get('missedScans',0) and face.get('visualLostAt') and
             isinstance(face.get('visualAt'),(int,float)) and 0<=now-face['visualAt']<=250 and
-            0<=now-accepted_at<=2000):
+            0<=now-accepted_at<=900):
         return 'coasting'
     if isinstance(face.get('bodyAt'),(int,float)) and 0<=now-face['bodyAt']<=1800:
         return 'body'
-    if (not face.get('missedScans',0) and not face.get('visualLostAt') and 0<=now-accepted_at<=2000 and
+    if (not face.get('missedScans',0) and not face.get('visualLostAt') and 0<=now-accepted_at<=900 and
             isinstance(face.get('visualAt'),(int,float)) and 0<=now-face['visualAt']<250):
         return 'visual'
     return 'predicted'

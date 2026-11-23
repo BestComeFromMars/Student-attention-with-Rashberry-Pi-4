@@ -31,11 +31,14 @@ class ObjectVisualTracker:
     # detector results and failed native measurements still remove immediately.
     MAX_LIVE_SUPPORT_MS=8000
 
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, history_limit=64, track_edge=640, max_objects=20):
         self.model_path=model_path
         self.visual=FaceVisualTracker(model_path)
         self.tracks=[]
-        self.history=deque(maxlen=64)
+        self.history=deque(maxlen=max(4,int(history_limit)))
+        self.track_edge=max(240,int(track_edge))
+        self.max_objects=max(1,int(max_objects))
+        self.enabled=True
         self.next_id=1
         self.shape=None
         self.last_scan=-1
@@ -50,12 +53,27 @@ class ObjectVisualTracker:
         self.thread=threading.Thread(target=self._prepare_loop,name='object-templates',daemon=False)
         self.thread.start()
 
-    @staticmethod
-    def image(frame):
-        scale=min(1.,640/max(frame.shape[:2]))
+    def set_enabled(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self.enabled:
+            return
+        self.enabled = enabled
+        if not enabled:
+            self.tracks = []
+            self.visual.items.clear()
+            self.history.clear()
+            with self.lock:
+                self.generation += 1
+                self.pending = None
+                self.completed = None
+
+    def image(self, frame):
+        scale=min(1., getattr(self, 'track_edge', 640)/max(frame.shape[:2]))
         return cv2.resize(frame,None,fx=scale,fy=scale) if scale<1 else frame
 
     def remember_source(self, frame, at):
+        if not self.enabled:
+            return
         image=self.image(frame)
         reference={track['id']:dict(kind=track['kind'],box=list(track['box'])) for track in self.tracks}
         self.history.append((at,image.copy(),reference))
@@ -83,7 +101,7 @@ class ObjectVisualTracker:
                     # are one target, not two identical object rectangles.
                     if any(same_target(candidate,[other['box'][key] for key in ('x','y','width','height')],obj['kind']==other['kind']) for other in ordered):continue
                     ordered.append(obj)
-                    if len(ordered)>=20:break
+                    if len(ordered)>=getattr(self,'max_objects',20):break
                 tracks=[]
                 for index,obj in enumerate(ordered):
                     box=obj.get('box',{})
@@ -158,6 +176,8 @@ class ObjectVisualTracker:
         # growing tail here could delay all boxes behind the next detector scan.
 
     def update(self, frame, at, snapshot=None):
+        if not self.enabled:
+            return []
         image=self.image(frame)
         if self.shape!=image.shape:
             self.shape=image.shape

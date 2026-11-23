@@ -1,7 +1,7 @@
 import type {AttentionCapture} from './attention-captures';
 
 export const vietnamDay=(at=Date.now())=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(at);
-export interface HistoryRunSummary {id:string;date:string;number:number;startedAt:number;endedAt?:number;source:'pi'|'webcam';cameraLabel:string;peopleCount:number;eventCount:number}
+export interface HistoryRunSummary {id:string;date:string;number:number;startedAt:number;endedAt?:number;source:'pi'|'webcam'|'video';cameraLabel:string;peopleCount:number;eventCount:number}
 export interface HistoryCapture {captureId:string;trackId:string;displayName:string;labels:string[];count:number;firstAt:number;lastAt:number;revision:number;photoAt?:number;photoBeforeAlert?:boolean;photoRevision?:number;photoUrl?:string}
 export interface HistoryRun extends HistoryRunSummary {captures:HistoryCapture[]}
 export interface HistoryState {date:string;days:string[];runs:HistoryRunSummary[];selectedId?:string;detail?:HistoryRun;activeId?:string;loading:boolean;error?:string;savingError?:string}
@@ -54,7 +54,7 @@ export class DetectionHistory {
     catch(error){if(this.state.selectedId===runId)this.publish({loading:false,error:error instanceof Error?error.message:'Không tải được lần nhận diện.'});}
   }
   toggle(runId:string){if(this.state.selectedId===runId){this.publish({selectedId:undefined,detail:undefined});}else void this.select(runId);}
-  begin(source:'pi'|'webcam',cameraLabel:string){
+  begin(source:HistoryRunSummary['source'],cameraLabel:string){
     if(this.state.activeId)return this.state.activeId;
     const startedAt=this.now(),id=crypto.randomUUID(),date=vietnamDay(startedAt);
     const run:HistoryRun={id,date,startedAt,number:0,source,cameraLabel:cameraLabel||'Camera',peopleCount:0,eventCount:0,captures:[]};
@@ -66,15 +66,20 @@ export class DetectionHistory {
   }
   enqueue(runId:string,entry:AttentionCapture){
     const job=this.jobs.get(runId);if(!job||job.dropped||!entry.captureId||!entry.revision)return;
-    const update:Update={captureId:entry.captureId,trackId:entry.id,displayName:entry.displayName,labels:[...entry.labels],
+    const labels=entry.labels.slice(0,1);
+    const update:Update={captureId:entry.captureId,trackId:entry.id,displayName:entry.displayName,labels,
       count:entry.count,firstAt:entry.firstAt,lastAt:entry.lastAt,revision:entry.revision,
       photo:entry.photo,photoAt:entry.photoAt,photoBeforeAlert:entry.photoBeforeAlert};
+    const old=job.run.captures.find(c=>c.captureId===update.captureId||c.trackId===update.trackId);
+    const sameCapture=!old||old.captureId===update.captureId;
     const previous=job.pending.get(update.captureId);
     if(previous&&previous.revision>update.revision)return;
-    if((job.run.captures.find(c=>c.captureId===update.captureId)?.revision??0)>=update.revision)return;
-    job.pending.set(update.captureId,{...previous,...update,photo:update.photo??previous?.photo});
-    const old=job.run.captures.find(c=>c.captureId===update.captureId);
-    const item:HistoryCapture={...old,...update,photoUrl:update.photo??old?.photoUrl};
+    if(sameCapture&&(old?.revision??0)>=update.revision)return;
+    if(old&&!sameCapture)job.pending.delete(old.captureId);
+    job.pending.set(update.captureId,{...previous,...update,photo:update.photo??(sameCapture?previous?.photo:undefined)});
+    const item:HistoryCapture={...(sameCapture?old:undefined),...update,
+      firstAt:old?Math.min(old.firstAt,update.firstAt):update.firstAt,
+      photoUrl:update.photo??(sameCapture?old?.photoUrl:undefined)};
     delete (item as Partial<Update>).photo;
     if(old)job.run.captures.splice(job.run.captures.indexOf(old),1,item);else job.run.captures.push(item);
     this.refreshJob(job);this.schedule(250);

@@ -100,7 +100,7 @@ async function main() {
   const derived=[];
   let needsExport=false;
   console.log('[AI] Checking YOLO ONNX exports...');
-  for(const name of ['yolo11s','yolo11m','yolo11n-pose']){
+  for(const name of ['yolo11n','yolo11s','yolo11m','yolo11n-pose']){
     const path=resolve(directory,name+'.onnx');
     if(!exported?.files?.find(file=>file.path===name+'.onnx')||
         !await verified(path,exported.files.find(file=>file.path===name+'.onnx'))){
@@ -113,7 +113,7 @@ async function main() {
     console.log('[AI] Exporting missing or invalid YOLO ONNX models...');
     await run(python,['ai/export_yolo.py',directory]);
   }
-  for(const name of ['yolo11s','yolo11m','yolo11n-pose']){
+  for(const name of ['yolo11n','yolo11s','yolo11m','yolo11n-pose']){
     const path=resolve(directory,name+'.onnx');
     const hash=createHash('sha256');
     for await(const chunk of createReadStream(path))hash.update(chunk);

@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {createServer} from 'node:http';
-import {defaultObservationSettings,parseObservationSettings,observationSettingsSchema} from '../src/observation-settings.js';
+import {defaultObservationSettings,parseObservationSettings,observationSettingsSchema,activeFeaturesForSettings} from '../src/observation-settings.js';
 import {AttentionEvaluator} from '../src/attention.js';
 import {PostureBehavior} from '../src/posture-behavior.js';
 import {HeadMotion} from '../src/head-motion.js';
@@ -15,8 +15,8 @@ function person(at:number):StudentTrack{return {id:'A',displayName:'A',color:'',
 const signal=(track:StudentTrack,type:string)=>track.signals!.find(item=>item.type===type)!;
 describe('bounded observation settings',()=>{
   it('round-trips defaults and never shares mutable configuration between sessions',()=>{
-    const first=defaultObservationSettings(),second=defaultObservationSettings();first.enabled.phone=false;
-    expect(second.enabled.phone).toBe(true);expect(parseObservationSettings(second)).toEqual(second);
+    const first=defaultObservationSettings(),second=defaultObservationSettings();first.enabled.phone=true;first.objectsEnabled=true;
+    expect(second.enabled.phone).toBe(false);expect(second.objectsEnabled).toBe(false);expect(parseObservationSettings(second)).toEqual(second);
     expect(observationSettingsSchema().behaviors).toHaveLength(11);
   });
   it.each([NaN,Infinity,-1,0,30001,100.5,'500',null])('rejects invalid durations: %s',value=>{
@@ -39,8 +39,9 @@ describe('settings change actual confirmation rules',()=>{
     ['upper_body_slumped','slumpMs',(p:StudentTrack)=>{p.faceVisibility='unavailable';p.observation!.valid=false;
       p.observation!.deskRest={active:true,confidence:.4,personConfidence:.2,observedAt:p.lastSeen};}],
   ] as const)('applies custom duration and disable switch to %s',(kind,key,change)=>{
-    const settings=defaultObservationSettings();settings.thresholds[key]=2000;
-    const configured=new AttentionEvaluator(settings),normal=new AttentionEvaluator();
+    const settings=defaultObservationSettings();settings.thresholds[key]=2000;settings.enabled[kind]=true;settings.objectsEnabled=true;
+    const defaults=defaultObservationSettings();defaults.enabled[kind]=true;defaults.objectsEnabled=true;
+    const configured=new AttentionEvaluator(settings),normal=new AttentionEvaluator(defaults);
     let result:StudentTrack;
     for(const at of [1000,1900,2600,3100]){
       const p=person(at);change(p);result=configured.evaluate([p],at)[0];
@@ -114,7 +115,7 @@ describe('per-session configuration and HTTP',()=>{
     expect(sessions.settings(b).thresholds.headDownPitchDeg).toBe(18);
     now=3000;await sessions.detect(a,Buffer.from('x'),engine,'pi');now=4000;
     expect((await sessions.detect(a,Buffer.from('x'),engine,'pi'))[0].alerts).toEqual([]);
-    const returned=sessions.settings(a);returned.enabled.phone=false;expect(sessions.settings(a).enabled.phone).toBe(true);
+    const returned=sessions.settings(a);returned.enabled.phone=true;expect(sessions.settings(a).enabled.phone).toBe(false);
   });
   it('does not change configuration in the middle of an in-flight detection',async()=>{
     const sessions=new Sessions(()=>1000),id=sessions.create();let finish!:()=>void;
@@ -140,5 +141,20 @@ describe('per-session configuration and HTTP',()=>{
       expect((await fetch(endpoint,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)})).status).toBe(200);
       expect((await (await fetch(endpoint)).json()).settings.enabled.upper_body_slumped).toBe(false);
     }finally{server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
+  });
+  it('gates objects and forwards active AI feature flags to the engine',async()=>{
+    const defaults=defaultObservationSettings();
+    expect(activeFeaturesForSettings(defaults)).toEqual({
+      objects:false,hands:false,faceMesh:true,profileMesh:true,pose:true,deskRest:true,faceHeading:true,
+    });
+    const configured:unknown[]=[];
+    const sessions=new Sessions(()=>1000),id=sessions.create(defaults);
+    const engine:InferenceEngine={ready:true,close:async()=>{},configure:(sessionId,features)=>configured.push({sessionId,features}),detect:async()=>[]};
+    await sessions.detect(id,Buffer.from('x'),engine);
+    expect(configured).toHaveLength(1);
+    const next=defaultObservationSettings();next.objectsEnabled=true;next.enabled.phone=true;next.enabled.upper_body_slumped=false;
+    sessions.configure(id,next,engine);
+    expect(configured).toHaveLength(2);
+    expect((configured[1] as {features:Record<string,boolean>}).features).toMatchObject({objects:true,hands:true,deskRest:false});
   });
 });

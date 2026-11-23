@@ -27,7 +27,7 @@ function setup(){
 describe('persistent attention panel',()=>{
   it('opens the newest block and reads archived portraits and counts with the camera off',async()=>{
     const {history,session}=setup();render(<AttentionList state={base} session={session}/>);
-    expect(await screen.findByRole('img',{name:/Ảnh mặt Minh Anh/})).toBeDefined();
+    expect(await screen.findByRole('img',{name:/Ảnh Minh Anh/})).toBeDefined();
     expect(screen.getByText(/2 đợt cảnh báo/)).toBeDefined();
     expect((screen.getByLabelText('Ngày lịch sử') as HTMLInputElement).value).toBe(vietnamDay());
     const toggle=screen.getByRole('button',{name:/Lần 1/});fireEvent.click(toggle);

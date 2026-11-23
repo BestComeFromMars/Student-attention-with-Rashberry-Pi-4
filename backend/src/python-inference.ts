@@ -91,25 +91,33 @@ export async function createPythonEngine(directory: string, signal?: AbortSignal
     if (message.error) job.reject(new HttpError(422, 'AI không xử lý được khung hình: ' + message.error));
     else job.resolve({people:message.people ?? [],objects:message.objects ?? [],frameAt:message.frameAt,memory:message.memory});
   });
+  const killChild = () => {
+    if (process.platform === 'win32' && child.pid) {
+      try {
+        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      } catch { /* fall back to direct kill */ }
+    }
+    child.kill();
+  };
   const startup = setTimeout(() => {
     fail(new Error('AI chưa khởi tạo được trong 90 giây.'));
-    child.kill();
+    killChild();
   }, 90000);
   const cancelStartup = () => {
     closing = true;
     fail(new Error('Đã hủy khởi tạo AI.'));
     child.stdin.end();
-    child.kill();
+    killChild();
   };
   signal?.addEventListener('abort', cancelStartup, { once: true });
   if (signal?.aborted) cancelStartup();
   try { await initialization; }
-  catch (error) { child.kill(); throw error; }
+  catch (error) { killChild(); throw error; }
   finally { clearTimeout(startup); signal?.removeEventListener('abort', cancelStartup); }
   const pixels=createPixelTracker(python,backend,{...await localAIEnv(backend),PYTHONDONTWRITEBYTECODE:'1',OMP_NUM_THREADS:'1',OPENBLAS_NUM_THREADS:'1'});
   const engine:InferenceEngine = {
     trackFrame:(jpeg,context)=>pixels.track(jpeg,context.sessionId,context.frameId,context.capturedAt),
-    seedGeometry:(session,seeds)=>pixels.seed(session,seeds),
+    seedGeometry:(session,seeds)=>pixels.seed(session,seeds,true),
     detector: 'classroom',
     get ready() { return ready && !closing; },
     get startupError() { return lastFailure?.message; },
@@ -134,6 +142,9 @@ export async function createPythonEngine(directory: string, signal?: AbortSignal
         });
       });
     },
+    configure(sessionId, features) {
+      if (!closing) child.stdin.write(JSON.stringify({ type: 'configure', session: sessionId, features }) + '\n');
+    },
     release(sessionId) {
       pixels.release(sessionId);
       if (!closing) child.stdin.write(JSON.stringify({ type: 'release', session: sessionId }) + '\n');
@@ -147,7 +158,7 @@ export async function createPythonEngine(directory: string, signal?: AbortSignal
       diagnostics.close();
       child.stdin.end();
       await new Promise<void>(yes => {
-        const timer = setTimeout(() => { child.kill(); yes(); }, 15000);
+        const timer = setTimeout(() => { killChild(); yes(); }, 15000);
         child.once('exit', () => { clearTimeout(timer); yes(); });
         if (child.exitCode !== null) { clearTimeout(timer); yes(); }
       });

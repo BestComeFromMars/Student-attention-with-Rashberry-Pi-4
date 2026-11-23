@@ -9,25 +9,24 @@ from types import SimpleNamespace
 import cv2
 import mediapipe as mp
 import numpy as np
-import torch
-from ultralytics import YOLO
-from ultralytics.trackers.byte_tracker import BYTETracker
+from lite_bytetrack import BaseTrack, BYTETracker
+from light_results import NumpyBoxes
 from head_orientation import keypoint_heading
 from body_pose import pack_pose,match_poses
-from desk_rest import DeskRestDetector,corroborate_people,attach_rest,rest_person_candidates,activate_confirmed_rest_people,latest_rest_evidence,refresh_rest
+from desk_rest import DeskRestDetector,corroborate_people,attach_rest,rest_person_candidates,activate_confirmed_rest_people,latest_rest_evidence,refresh_rest,match_rest_to_bodies
 from rest_body_tracking import RestBodyTracking
 from geometry import iou
 from face_validation import landmarks_match_box
 from image_quality import face_quality, enhance_low_light
 from mouth_geometry import measure_mouth
-from profile_landmarks import ProfileLandmarker
+from profile_landmarks import ProfileLandmarker, profile_yaw, profile_pitch
 from association import associate_objects
 from native_runtime import serialized,export_serialized
 from onnx_yolo import ONNXRuntimeYOLO
 from action_recognition import ActionRecognizer
 from object_scene import SceneObjects
-from scb_recognition import SCBRecognizer
 from memory_budget import MemoryBudget,select_people
+from runtime_profile import resolve_profile, default_features, merge_features
 
 FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109]
 LEFT_EYE, RIGHT_EYE = [33,160,158,133,153,144], [362,385,387,263,373,380]
@@ -57,57 +56,54 @@ def contains(box, point, margin=.05):
 class Perception:
     def __init__(self, models):
         self.models = Path(models)
+        self.profile_cfg = resolve_profile()
         # multiprocessing uses spawn on Windows: OpenCV's parent thread limit
         # is not inherited. Its default per-operation pool oversubscribed all
         # face/YOLO/pose/hand threads in dense scenes and delayed snapshots.
         cv2.setNumThreads(max(1,min(4,int(os.environ.get('AI_OPENCV_THREADS','1')))))
         self.device = os.environ.get("AI_DEVICE", "cpu")
         if self.device == "auto":
+            import torch
             self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        torch.set_num_threads(max(1, min(4, int(os.environ.get("AI_THREADS", "1")))))
-        torch.set_num_interop_threads(1)
-        # Keep optimized convolutions; disabling them greatly increases CPU workspace RAM.
-        if os.name=="nt" and self.device=="cpu":
-            torch.backends.mkldnn.enabled = os.environ.get("AI_USE_MKLDNN","1")=="1"
+        if self.device != "cpu":
+            import torch
+            torch.set_num_threads(max(1, min(4, int(os.environ.get("AI_THREADS", "1")))))
+            torch.set_num_interop_threads(1)
         # Keep the legacy status field for clients, without loading a scoring model.
         self.engagement=SimpleNamespace(model=None,status='disabled_observation_only')
-        self.desk_rest=DeskRestDetector(self.models)
-        if self.device=='cpu':
-            self.people=ONNXRuntimeYOLO(self.models/'yolo11s.onnx')
-            # Its own session: mutable input buffers must not be shared with
-            # the concurrent person detector. The CPU host uses the small graph
-            # so full frame + one crop can finish before evidence expires.
-            self.objects=ONNXRuntimeYOLO(self.models/'yolo11s.onnx')
-            self.pose=ONNXRuntimeYOLO(self.models/'yolo11n-pose.onnx',pose=True)
-        else:
-            self.people = YOLO(str(self.models/"yolo11s.pt"))
-            self.objects = YOLO(str(self.models/"yolo11m.pt"))
-            self.pose = YOLO(str(self.models/"yolo11n-pose.pt"))
-        self.scene_detector=SceneObjects(self.objects,self.device)
-        # Fuse and warm before MediaPipe creates its native inference delegates.
+        self.model_lock = threading.Lock()
+        self.session_features = {}
+        self.active_features = default_features()
+        self.desk_rest = None
+        self.pose = None
+        self.face = None
+        self.profile = None
+        self.hands = None
+        self.objects = None
+        self.scene_detector = None
+        self.person_model_name = self.profile_cfg['personModel']
+        # Warm only active Tier-2 behavior models (Pose, DeskRest, FaceLandmarker).
+        # Tier-1 person detection lives in worker.py; objects YOLO loads lazily when enabled.
         blank = np.zeros((320, 320, 3), np.uint8)
-        print("AI: warming YOLO models",flush=True)
-        for model in (self.people, self.objects, self.pose):
-            model.predict(blank, imgsz=640, device=self.device, verbose=False)
-        vision = mp.tasks.vision
-        options = mp.tasks.BaseOptions
-        self.face = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-            base_options=options(model_asset_path=str(self.models/"face_landmarker.task")),
-            running_mode=vision.RunningMode.IMAGE, num_faces=1,
-            min_face_detection_confidence=.3, min_face_presence_confidence=.45,
-            output_face_blendshapes=True, output_facial_transformation_matrixes=True))
-        self.profile = ProfileLandmarker(self.models/'face_landmarker.task')
-        self.hands = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
-            base_options=options(model_asset_path=str(self.models/"hand_landmarker.task")),
-            running_mode=vision.RunningMode.IMAGE, num_hands=2,
-            min_hand_detection_confidence=.35, min_hand_presence_confidence=.35))
-        self.actions=SCBRecognizer(self.models.parent/'classroom-actions') if os.environ.get('AI_CLASSROOM_ACTIONS')=='1' else ActionRecognizer(self.models.parent/'actions')
-        self.memory_budget=MemoryBudget()
-        self.person_limit=self.memory_budget.limit
+        print(f"AI: warming behavior models (profile={self.profile_cfg['name']})", flush=True)
+        if self.active_features['pose'] or not self.profile_cfg.get('lazyOptionalModels', True):
+            self._ensure_pose().predict(blank, imgsz=640, device=self.device, verbose=False)
+        if self.active_features['deskRest'] or not self.profile_cfg.get('lazyOptionalModels', True):
+            self._ensure_desk_rest()
+        if self.active_features['faceMesh'] or not self.profile_cfg.get('lazyOptionalModels', True):
+            self._ensure_face()
+        if self.active_features['hands'] and not self.profile_cfg.get('lazyOptionalModels', True):
+            self._ensure_hands()
+        if os.environ.get('AI_CLASSROOM_ACTIONS') == '1':
+            from scb_recognition import SCBRecognizer
+            self.actions = SCBRecognizer(self.models.parent / 'classroom-actions')
+        else:
+            self.actions = ActionRecognizer(self.models.parent / 'actions')
+        self.memory_budget = MemoryBudget()
+        self.person_limit = self.memory_budget.limit
         self.sessions = {}
         self.latest = {}
         self.scene_latest = {}
-        self.body_latest = {}
         self.pose_latest = {}
         self.rest_latest = {}
         self.scene_results = {}
@@ -118,38 +114,177 @@ class Perception:
         self.stop = threading.Event()
         self.face_error = None
         self.scene_error = None
-        self.timings={'opencvThreads':cv2.getNumThreads()}
+        self.timings = {'opencvThreads': cv2.getNumThreads(), 'profile': self.profile_cfg['name'], 'personModel': self.person_model_name}
         self.thread = threading.Thread(target=self._loop, name="behavior-analysis", daemon=False)
-        self.scene_thread = threading.Thread(target=self._scene_loop,name="objects-and-body",daemon=False)
-        self.body_thread=threading.Thread(target=self._body_loop,name='person-detection',daemon=False)
-        self.pose_thread=threading.Thread(target=self._pose_loop,name='person-pose',daemon=False)
-        self.rest_thread=threading.Thread(target=self._rest_loop,name='desk-rest',daemon=False)
+        self.scene_thread = threading.Thread(target=self._scene_loop, name="objects-analysis", daemon=False)
+        self.pose_thread = threading.Thread(target=self._pose_loop, name='person-pose', daemon=False)
+        self.rest_thread = threading.Thread(target=self._rest_loop, name='desk-rest', daemon=False)
         self.thread.start()
         self.scene_thread.start()
-        self.body_thread.start()
         self.pose_thread.start()
         self.rest_thread.start()
-        print("AI: all pipelines ready",flush=True)
+        print("AI: all pipelines ready", flush=True)
 
-    def submit(self, session, frame, faces, at, body_only=False):
-        state = self._state(session)
-        self.person_limit=self.memory_budget.update(sum(len(s.get('bodies',[])) for s in self.sessions.values()))
-        faces=select_people(faces,self.person_limit,state.get('faceCache',{}))
-        state['lastAt']=at
-        if not body_only:self.actions.observe(session,frame,state['bodies'],at)
+    def _ensure_objects(self):
+        with self.model_lock:
+            if self.objects is None:
+                if self.device == 'cpu':
+                    name = self.profile_cfg.get('objectModel', 'yolo11n.onnx')
+                    path = self.models / name
+                    if not path.is_file():
+                        path = self.models / 'yolo11n.onnx'
+                    self.objects = ONNXRuntimeYOLO(path)
+                else:
+                    from ultralytics import YOLO
+                    self.objects = YOLO(str(self.models / 'yolo11m.pt'))
+                self.scene_detector = SceneObjects(self.objects, self.device, tile_crop=self.profile_cfg.get('sceneTileCrop', True))
+            return self.scene_detector
+
+    def _ensure_desk_rest(self):
+        with self.model_lock:
+            if self.desk_rest is None:
+                self.desk_rest = DeskRestDetector(self.models)
+            return self.desk_rest
+
+    def _ensure_pose(self):
+        with self.model_lock:
+            if self.pose is None:
+                if self.device == 'cpu':
+                    self.pose = ONNXRuntimeYOLO(self.models / 'yolo11n-pose.onnx', pose=True)
+                else:
+                    from ultralytics import YOLO
+                    self.pose = YOLO(str(self.models / 'yolo11n-pose.pt'))
+            return self.pose
+
+    def _ensure_face(self):
+        with self.model_lock:
+            if self.face is None:
+                vision = mp.tasks.vision
+                options = mp.tasks.BaseOptions
+                self.face = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+                    base_options=options(model_asset_path=str(self.models/"face_landmarker.task")),
+                    running_mode=vision.RunningMode.IMAGE, num_faces=1,
+                    min_face_detection_confidence=.3, min_face_presence_confidence=.45,
+                    output_face_blendshapes=True, output_facial_transformation_matrixes=True))
+            return self.face
+
+    def _ensure_profile(self):
+        with self.model_lock:
+            if self.profile is None:
+                self.profile = ProfileLandmarker(self.models / 'face_landmarker.task')
+            return self.profile
+
+    def _ensure_hands(self):
+        with self.model_lock:
+            if self.hands is None:
+                vision = mp.tasks.vision
+                options = mp.tasks.BaseOptions
+                self.hands = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+                    base_options=options(model_asset_path=str(self.models/"hand_landmarker.task")),
+                    running_mode=vision.RunningMode.IMAGE, num_hands=2,
+                    min_hand_detection_confidence=.35, min_hand_presence_confidence=.35))
+            return self.hands
+
+    def _feature_enabled(self, session, key):
+        features = getattr(self, 'session_features', None)
+        if not features:
+            return True
+        config = features.get(session)
+        return True if config is None else bool(config.get(key, True))
+
+    def configure(self, session, features):
         with self.lock:
-            if not body_only:
-                self.latest[session] = (frame, faces, at,state)  # replace, never append old camera frames
-                self.scene_latest[session] = (frame,faces,at,state)
-            self.body_latest[session]=(frame,at,state)
-            self.pose_latest[session]=(frame,at,state)
-            self.rest_latest[session]=(frame,at,state)
+            self.session_features[session] = dict(features)
+            self.active_features = merge_features(list(self.session_features.values()))
+            state = self.sessions.get(session)
+            if state is not None:
+                if not features.get('objects', True):
+                    self.scene_latest.pop(session, None)
+                    self.scene_results.pop(session, None)
+                    self.scene_objects.pop(session, None)
+                    state['objects'] = []
+                    state.pop('objectsAt', None)
+                    for obs in state.get('bodyObservations', {}).values():
+                        obs.pop('phoneHeld', None)
+                        obs.pop('laptopInteraction', None)
+                        obs.pop('bookInteraction', None)
+                        obs.pop('objectRegions', None)
+                if not features.get('deskRest', True):
+                    self.rest_latest.pop(session, None)
+                    state.pop('restObservations', None)
+                    state.pop('restHistory', None)
+                    state.pop('restCandidates', None)
+                    state.pop('restPersonCandidates', None)
+                if not features.get('pose', True):
+                    self.pose_latest.pop(session, None)
+                    state.pop('poseObservations', None)
+                    state.pop('poseHistory', None)
+                    state['poses'] = []
+                    state['wrists'] = []
+                    state['headings'] = []
+                    state['poseRegions'] = []
+        if getattr(self, 'profile_cfg', {}).get('lazyOptionalModels', True):
+            self._release_unused_models()
 
-    def snapshot(self, session):
+    def _release_unused_models(self):
+        released = False
+        with self.model_lock:
+            if not self.active_features.get('hands', True) and self.hands is not None:
+                try: self.hands.close()
+                except Exception: pass
+                self.hands = None; released = True
+            if not self.active_features.get('profileMesh', True) and self.profile is not None:
+                try: self.profile.close()
+                except Exception: pass
+                self.profile = None; released = True
+            if not self.active_features.get('deskRest', True) and self.desk_rest is not None:
+                self.desk_rest = None; released = True
+            if not self.active_features.get('objects', False) and getattr(self, 'objects', None) is not None:
+                self.objects = None; self.scene_detector = None; released = True
+        if released:
+            gc.collect()
+
+    def submit(self, session, frame, faces, at, bodies=None):
+        state = self._state(session)
+        self.person_limit = self.memory_budget.update(sum(len(s.get('bodies', [])) for s in self.sessions.values()))
+        faces = select_people(faces, self.person_limit, state.get('faceCache', {}))
+        state['lastAt'] = at
+        if bodies is not None:
+            with self.lock:
+                state['bodies'] = [dict(b) for b in bodies]
+                state['bodyCandidateCount'] = len(bodies)
+                state['peopleAt'] = at
+                state['bodyHistory'].append((at, [dict(b) for b in bodies]))
+                rest_at, evidence = latest_rest_evidence(state.get('restHistory', ()), at)
+                rest_obs = match_rest_to_bodies(state['bodies'], state.get('restObservations', {}), evidence, rest_at, at)
+                state['restObservations'] = {k: v for k, v in rest_obs.items() if v.get('active')}
+                folded = state.setdefault('restBodyTracking', RestBodyTracking())
+                if self._feature_enabled(session, 'deskRest'):
+                    folded.seed(state['bodies'], state['restObservations'], at)
+                else:
+                    folded.tracks.clear()
+        self.actions.observe(session, frame, state['bodies'], at)
+        need_face = self._feature_enabled(session, 'faceMesh') or self._feature_enabled(session, 'faceHeading')
+        need_objects = self._feature_enabled(session, 'objects')
+        need_pose = self._feature_enabled(session, 'pose')
+        need_rest = self._feature_enabled(session, 'deskRest')
+        with self.lock:
+            if need_face:
+                self.latest[session] = (frame, faces, at, state)
+            if need_objects:
+                self.scene_latest[session] = (frame, faces, at, state)
+            if need_pose:
+                self.pose_latest[session] = (frame, at, state)
+            if need_rest:
+                self.rest_latest[session] = (frame, at, state)
+
+    def snapshot(self, session, *, with_timestamp=False):
         with self.lock:
             output = {key:dict(value) for key,value in self.results.get(session, {}).items()}
             for key,value in self.scene_results.get(session,{}).items():
                 output.setdefault(key,dict(valid=False,eyeAspectRatio=0,yawOffset=0)).update(value)
+            if with_timestamp:
+                return dict(observations=output, faceAt=self.sessions.get(session, {}).get('faceAt', 0))
             return output
 
     @property
@@ -164,7 +299,7 @@ class Perception:
             body_at=state.get('peopleAt',0)
             rest_observations={identity:dict(cue) for identity,cue in state.get('restObservations',{}).items()}
             rest_at,rest_candidates=latest_rest_evidence(state.get('restHistory',()),state.get('lastAt',body_at))
-            rest_current=refresh_rest(bodies,rest_observations,rest_candidates,rest_at,state.get('lastAt',body_at))
+            rest_current=match_rest_to_bodies(bodies,rest_observations,rest_candidates,rest_at,state.get('lastAt',body_at))
         output=[]
         for body in bodies:
             observation=dict(observations.get(body['id'],{}))
@@ -195,117 +330,75 @@ class Perception:
     def release(self, session):
         with self.lock:
             self.latest.pop(session, None)
-            self.scene_latest.pop(session,None)
-            self.body_latest.pop(session,None)
-            self.pose_latest.pop(session,None)
-            self.rest_latest.pop(session,None)
-            self.scene_results.pop(session,None)
-            self.scene_boxes.pop(session,None)
-            self.scene_objects.pop(session,None)
+            self.scene_latest.pop(session, None)
+            self.pose_latest.pop(session, None)
+            self.rest_latest.pop(session, None)
+            self.scene_results.pop(session, None)
+            self.scene_boxes.pop(session, None)
+            self.scene_objects.pop(session, None)
             self.results.pop(session, None)
             self.sessions.pop(session, None)
+            if hasattr(self, 'session_features'):
+                self.session_features.pop(session, None)
+                self.active_features = merge_features(list(self.session_features.values()))
             self.actions.release(session)
 
     def _state(self, session):
         with self.lock:
             if session not in self.sessions:
-                from ultralytics.trackers.basetrack import BaseTrack
-                count = BaseTrack._count
-                args = SimpleNamespace(track_high_thresh=.2, track_low_thresh=.1, new_track_thresh=.2,
-                                       track_buffer=30, match_thresh=.8, fuse_score=True)
-                tracker = BYTETracker(args,frame_rate=5)
-                BaseTrack._count = max(count,BaseTrack._count)
-                self.sessions[session] = dict(tracker=tracker,peopleAt=0,
-                    objectsAt=0,bodies=[],objects=[],wrists=[],poses=[],cursor=0,faceCache={},bodyObservations={},lastAt=0,poseAt=0,bodyHistory=deque(maxlen=20))
+                self.sessions[session] = dict(
+                    _sessionId=session, peopleAt=0, objectsAt=0, bodies=[], objects=[],
+                    wrists=[], poses=[], cursor=0, faceCache={}, bodyObservations={},
+                    lastAt=0, poseAt=0, bodyHistory=deque(maxlen=20),
+                )
             return self.sessions[session]
 
-    def _people(self,state,frame,at):
-        height,width = frame.shape[:2]
-        if at-state["peopleAt"] >= 300:
-            result = self.people.predict(frame, imgsz=int(os.environ.get("AI_SCENE_IMGSZ","640")),
-                                         classes=[0],conf=.03,device=self.device,verbose=False)[0]
-            rows=result.boxes.data.cpu().numpy()
-            recent=[p for p in state.get('restReferences',[]) if 0<=at-p['personObservedAt']<=2000]
-            # The auxiliary posture model used to block every person scan.
-            # Consume its bounded, timestamped latest result without waiting.
-            with self.lock:
-                rest_at,evidence=latest_rest_evidence(state.get('restHistory',()),at)
-            candidates=rest_person_candidates(rows,evidence,width,height,at,rest_at,state.get('restPersonCandidates',[]))
-            rows,rest=corroborate_people(rows,evidence,width,height,at,recent,state.get('restPersonCandidates',[]),rest_at)
-            for candidate in candidates:
-                candidate['confirmed']=candidate.get('confirmed',False) or any(iou(candidate['box'],cue['candidateBox'])>=.5 for cue in rest.values())
-            state['restPersonCandidates']=candidates
-            self.timings.update(restPersonCandidates=len(candidates),restPeopleMatched=len(rest),
-                restEvidenceAgeMs=at-rest_at if rest_at else None)
-            # A weak candidate may continue a recently verified posture, but
-            # cannot start a person or renew the independent-person timestamp.
-            renewed=[p for p in rest.values() if p['candidateConfidence']>=.1]
-            state['restReferences']=[p for p in recent if not any(iou(p['box'],q['box'])>=.5 for q in renewed)]+renewed
-            from ultralytics.engine.results import Boxes
-            # Frontend switches 720p/1080p without changing the camera/session.
-            # Keep Kalman state in the first frame's coordinate plane; a resize
-            # is not a person moving or a reason to replace their identity.
-            tracking_width,tracking_height=state.setdefault('trackingSize',(width,height))
-            scale=np.asarray([tracking_width/width,tracking_height/height,tracking_width/width,tracking_height/height],dtype=np.float32)
-            tracking_rows=rows.copy();tracking_rows[:,:4]*=scale
-            tracked=state['tracker'].update(Boxes(torch.from_numpy(tracking_rows),(tracking_height,tracking_width)).numpy(),None).copy()
-            if len(tracked):tracked[:,:4]/=scale
-            tracked=activate_confirmed_rest_people(state['tracker'],tracked,rest,width,height,scale)
-            bodies = [{"id":int(row[4]), "at":at,"confidence":float(row[5]), "box":[float(row[0]/width),float(row[1]/height),
-                float((row[2]-row[0])/width),float((row[3]-row[1])/height)]} for row in tracked]
-            state['bodyCandidateCount']=len(bodies)
-            bodies=select_people(bodies,self.person_limit,(body['id'] for body in state.get('bodies',[])))
-            with self.lock:
-                observed=attach_rest(tracked,rows,rest,at,width,height)
-                for cue in observed.values():cue['observedAt']=rest_at
-                retained={identity:cue for identity,cue in state.get('restObservations',{}).items()
-                          if 0<=at-cue.get('personObservedAt',cue['observedAt'])<=2000}
-                state['restObservations']={**retained,**observed}
-                folded=state.setdefault('restBodyTracking',RestBodyTracking())
-                folded.seed(bodies,observed,at)
-                if state.get('restAt',0)>=at:folded.update(state.get('restCandidates',[]),state['restAt'])
-                state['bodies']=bodies;state['bodyHistory'].append((at,[dict(body) for body in bodies]));state['peopleAt']=at
-
     def _rest_loop(self):
+        interval = getattr(self, 'profile_cfg', {}).get('restIntervalMs', 500)
         while not self.stop.wait(.02):
-            with self.lock:pending=list(self.rest_latest.items());self.rest_latest.clear()
-            for session,(frame,at,state) in pending:
+            with self.lock:
+                pending = list(self.rest_latest.items())
+                self.rest_latest.clear()
+            for session, (frame, at, state) in pending:
                 try:
-                    # Match person detection's cadence. Skipping its second
-                    # image discarded the independent posture confirmation
-                    # needed to start an already folded, face-hidden person.
-                    if at-state.get('restAt',0)<300:continue
-                    started=time.perf_counter();evidence=self.desk_rest.predict(frame)
+                    if not self._feature_enabled(session, 'deskRest'):
+                        continue
+                    if at - state.get('restAt', 0) < interval:
+                        continue
+                    started = time.perf_counter()
+                    evidence = self._ensure_desk_rest().predict(frame)
                     with self.lock:
-                        if self.sessions.get(session) is not state:continue
-                        state.setdefault('restHistory',deque(maxlen=8)).append((at,evidence))
-                        state.update(restAt=at,restCandidates=evidence)
-                        if state.get('restBodyTracking'):state['restBodyTracking'].update(evidence,at)
-                        self.timings.update(restLatencyMs=int(time.time()*1000)-at,
-                            restInferenceMs=round((time.perf_counter()-started)*1000,2),restCandidates=len(evidence),restError=None)
-                except Exception as error:self.timings['restError']=str(error)
-
-    def _body_loop(self):
-        while not self.stop.wait(.015):
-            with self.lock:pending=list(self.body_latest.items());self.body_latest.clear()
-            for session,(frame,at,state) in pending:
-                try:
-                    # ONNX people detection has its own bounded cadence. It
-                    # must not wait behind transformer/pose/object work.
-                    started=time.perf_counter()
-                    self._people(state,frame,at)
-                    self.timings.update(bodyLatencyMs=int(time.time()*1000)-state['peopleAt'],
-                        bodyInferenceMs=round((time.perf_counter()-started)*1000,2),bodyDetections=len(state['bodies']))
-                    self.timings['bodyError']=None
-                except Exception as error:self.timings['bodyError']=str(error)
+                        if self.sessions.get(session) is not state:
+                            continue
+                        state.setdefault('restHistory', deque(maxlen=8)).append((at, evidence))
+                        state.update(restAt=at, restCandidates=evidence)
+                        rest_obs = match_rest_to_bodies(state.get('bodies', []), state.get('restObservations', {}), evidence, at, at)
+                        state['restObservations'] = {k: v for k, v in rest_obs.items() if v.get('active')}
+                        if state.get('restBodyTracking'):
+                            state['restBodyTracking'].update(evidence, at)
+                        self.timings.update(
+                            restLatencyMs=int(time.time() * 1000) - at,
+                            restInferenceMs=round((time.perf_counter() - started) * 1000, 2),
+                            restCandidates=len(evidence),
+                            restError=None,
+                        )
+                except Exception as error:
+                    self.timings['restError'] = str(error)
 
     @export_serialized
     def _pose(self, frame, at):
         height,width=frame.shape[:2]
-        pose=self.pose.predict(frame,imgsz=640,conf=.25,device=self.device,verbose=False)[0]
+        pose_model = self._ensure_pose() if getattr(self, 'pose', None) is None else self.pose
+        pose=pose_model.predict(frame,imgsz=640,conf=.25,device=self.device,verbose=False)[0]
         result=dict(wrists=[],poses=[],headings=[],poseRegions=[],poseAt=at)
         if pose.keypoints is not None:
-            for box,points,confidence in zip(pose.boxes.xyxy.cpu().numpy(),pose.keypoints.data.cpu().numpy(),pose.boxes.conf.cpu().numpy()):
+            raw_xyxy = pose.boxes.xyxy
+            raw_kpts = pose.keypoints.data
+            raw_conf = pose.boxes.conf
+            xyxy_np = raw_xyxy.cpu().numpy() if hasattr(raw_xyxy, 'cpu') else np.asarray(raw_xyxy)
+            kpts_np = raw_kpts.cpu().numpy() if hasattr(raw_kpts, 'cpu') else np.asarray(raw_kpts)
+            conf_np = raw_conf.cpu().numpy() if hasattr(raw_conf, 'cpu') else np.asarray(raw_conf)
+            for box,points,confidence in zip(xyxy_np,kpts_np,conf_np):
                 rectangle=[float(box[0]/width),float(box[1]/height),float((box[2]-box[0])/width),float((box[3]-box[1])/height)]
                 packed=pack_pose(box,points,confidence,width,height,at)
                 if packed is not None:
@@ -340,11 +433,13 @@ class Perception:
             headObservedAt=at,headSource='body_keypoints') for identity,pose in matched.items()}}
 
     def _pose_loop(self):
+        interval = getattr(self, 'profile_cfg', {}).get('poseIntervalMs', 400)
         while not self.stop.wait(.015):
             with self.lock:pending=list(self.pose_latest.items());self.pose_latest.clear()
             for session,(frame,at,state) in pending:
                 try:
-                    if at-state.get('poseAt',0)<400:continue
+                    if not self._feature_enabled(session, 'pose'): continue
+                    if at-state.get('poseAt',0)<interval:continue
                     result=self._pose(frame,at)
                     with self.lock:
                         if self.sessions.get(session) is not state:continue
@@ -357,10 +452,11 @@ class Perception:
     @serialized
     def _scene(self, state, frame, at):
         height,width=frame.shape[:2]
-        if at-state["objectsAt"] >= 700:
+        interval = getattr(self, 'profile_cfg', {}).get('sceneIntervalMs', 700)
+        if at-state["objectsAt"] >= interval:
             cursor=state.get('objectTile',0)
-            detected=self.scene_detector.predict(frame,cursor) if hasattr(self,'scene_detector') else self.objects.predict(
-                frame,imgsz=640,classes=[63,67,73],conf=.2,device=self.device,verbose=False)[0].boxes.data.cpu().numpy()
+            detector = self.scene_detector if getattr(self, 'scene_detector', None) is not None else self._ensure_objects()
+            detected=detector.predict(frame,cursor)
             state['objectTile']=(cursor+1)%4
             state["objects"] = [{"class":int(row[5]), "detectionId":index, "confidence":float(row[4]), "box":[float(row[0]/width),float(row[1]/height),
                 float((row[2]-row[0])/width),float((row[3]-row[1])/height)]} for index,row in enumerate(detected)]
@@ -381,11 +477,13 @@ class Perception:
         if scale<1:
             crop = cv2.resize(crop,None,fx=scale,fy=scale)
         rgb = np.ascontiguousarray(cv2.cvtColor(crop,cv2.COLOR_BGR2RGB))
-        result = self.hands.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        hands_model = self._ensure_hands() if getattr(self, 'hands', None) is None else self.hands
+        result = hands_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
         return [(float((left+p.x*(right-left))/width),float((top+p.y*(bottom-top))/height))
                 for hand in result.hand_landmarks for i,p in enumerate(hand) if i in [0,5,8,9,12,16,20]]
 
     def _ownership(self, frame, state, faces,at=None):
+        hands_enabled = self._feature_enabled(state.get('_sessionId'), 'hands') if '_sessionId' in state else True
         bodies = state["bodies"]
         pose_state=state
         if at is not None:
@@ -403,7 +501,7 @@ class Perception:
             for pose_box, wrists in pose_state.get('wrists',[]):
                 if iou(body["box"], pose_box) > .3:
                     points.extend(wrists)
-            if near_objects and budget>0:
+            if hands_enabled and near_objects and budget>0:
                 points.extend(self._hands_for(frame,body["box"]))
                 budget -= 1
             hand_points[body["id"]] = points
@@ -462,20 +560,30 @@ class Perception:
         crop = frame[top:bottom,left:right]
         if not crop.size:
             return missing
+        if face["facePixels"] < 24:
+            return self._face_heading_only(frame, face, at)
         factor = 256/max(crop.shape[:2])
         scaled = cv2.resize(crop,(max(1,round(crop.shape[1]*factor)),max(1,round(crop.shape[0]*factor))))
         rgb = np.ascontiguousarray(cv2.cvtColor(scaled,cv2.COLOR_BGR2RGB))
-        result = self.face.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
+        face_model = self._ensure_face() if getattr(self, 'face', None) is None else self.face
+        result = face_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
         if not result.face_landmarks:
-            enhanced = enhance_low_light(scaled)
-            if enhanced is not None:
-                rgb = np.ascontiguousarray(cv2.cvtColor(enhanced,cv2.COLOR_BGR2RGB))
-                result = self.face.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
+            skip_bright = getattr(self, 'profile_cfg', {}).get('skipLowLightRetryWhenNormal', False)
+            if not skip_bright or quality.get('brightness', 100) < 55:
+                enhanced = enhance_low_light(scaled)
+                if enhanced is not None:
+                    rgb = np.ascontiguousarray(cv2.cvtColor(enhanced,cv2.COLOR_BGR2RGB))
+                    result = face_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
         profile_only = False
         if not result.face_landmarks:
-            result = self.profile.detect(frame,face,state) if getattr(self,'profile',None) is not None else None
+            if face["facePixels"] >= 48 and not getattr(self, '_dense_face_batch', False) and self._feature_enabled(session, 'profileMesh'):
+                prof = self.profile if getattr(self, 'profile', None) is not None else (self._ensure_profile() if hasattr(self, 'model_lock') else None)
+                result = prof.detect(frame,face,state) if prof is not None else None
+            else:
+                result = None
             if result is None:
-                return missing
+                fallback = self._face_heading_only(frame, face, at)
+                return fallback if fallback.get('headPoseValid') else missing
             profile_only = True
         coordinate_width,coordinate_height = (width,height) if profile_only else (right-left,bottom-top)
         origin_x,origin_y = (0,0) if profile_only else (left,top)
@@ -496,42 +604,89 @@ class Perception:
             matrix = matrix / np.maximum(np.linalg.norm(matrix,axis=0,keepdims=True),1e-6)
             angles = cv2.RQDecomp3x3(matrix)[0]
             pitch,yaw = float(-angles[0]),float(angles[1])
+            # Supplement 3D matrix decomposition with rigid upper-face geometry
+            # (outer eye corners 33..263, nose tip 1, cheek contours 234..454),
+            # which is invariant to mouth opening and more responsive to real
+            # downward head bows and sideways head turns under webcam perspective.
+            eye_span = max(6.0, distance(points[33], points[263]))
+            eye_mid_y = float((points[33][1] + points[133][1] + points[362][1] + points[263][1]) * 0.25)
+            nose_drop = float((points[1][1] - eye_mid_y) / eye_span)
+            geom_pitch = float(np.clip((nose_drop - 0.36) * 95.0, -45.0, 60.0))
+            if pitch >= 3.0 and geom_pitch > pitch:
+                pitch = float(min(60.0, 0.45 * pitch + 0.55 * geom_pitch))
+            cheek_span = float(points[454][0] - points[234][0])
+            if cheek_span >= 6.0 and abs(yaw) >= 18.0:
+                cheek_mid_x = float((points[234][0] + points[454][0]) * 0.5)
+                cheek_offset = float((points[1][0] - cheek_mid_x) / (cheek_span * 0.5))
+                geom_yaw = float(np.clip(cheek_offset * 52.0, -75.0, 75.0))
+                if yaw * geom_yaw >= 0 and abs(geom_yaw) > abs(yaw):
+                    yaw = float(0.45 * yaw + 0.55 * geom_yaw)
         refined = [(mn[0]/width-box[0])/max(box[2],1e-6),(mn[1]/height-box[1])/max(box[3],1e-6),
                    (mx[0]-mn[0])/width/max(box[2],1e-6),(mx[1]-mn[1])/height/max(box[3],1e-6)]
-        mouth_valid = bool(face["facePixels"] >= int(os.environ.get("MIN_BEHAVIOR_FACE_PX","40")))
+        mouth_valid = bool(face["facePixels"] >= int(os.environ.get("MIN_BEHAVIOR_FACE_PX","28")))
         valid = mouth_valid and not profile_only
         # Coarse orientation needs less detail than eyelids/articulation. Do not
         # withhold a measured head pose solely because mouth detail is missing.
-        head_pose_valid=bool(face['facePixels']>=32 and quality.get('usable') is not False and
+        head_pose_valid=bool(face['facePixels']>=20 and quality.get('usable') is not False and
             yaw is not None and np.isfinite(yaw) and abs(yaw)<=90 and
             (pitch is None or np.isfinite(pitch) and abs(pitch)<=75))
         # Upscaling a tiny face does not restore eyelid detail. Keep its box,
         # heading and mouth measurements, but do not turn noisy EAR into an
         # eye-closure warning. The original-image pixels decide availability.
-        eye_valid=bool(valid and face['facePixels']>=64 and quality.get('usable') is not False and
-            min(distance(points[33],points[133]),distance(points[362],points[263]))>=8 and
+        eye_valid=bool(valid and face['facePixels']>=38 and quality.get('usable') is not False and
+            min(distance(points[33],points[133]),distance(points[362],points[263]))>=5.5 and
             (yaw is None or abs(yaw)<=45) and (pitch is None or abs(pitch)<=35))
+        jaw_open = blend.get("jawOpen")
+        if jaw_open is not None:
+            lip_motion = (
+                0.55 * (blend.get("mouthFunnel", 0.0) + blend.get("mouthPucker", 0.0))
+                + 0.45 * 0.5 * (blend.get("mouthLowerDownLeft", 0.0) + blend.get("mouthLowerDownRight", 0.0))
+                + 0.35 * 0.5 * (blend.get("mouthUpperUpLeft", 0.0) + blend.get("mouthUpperUpRight", 0.0))
+                + 0.25 * 0.5 * (blend.get("mouthStretchLeft", 0.0) + blend.get("mouthStretchRight", 0.0))
+            )
+            jaw_open = float(min(1.0, max(jaw_open, jaw_open + lip_motion)))
         return dict(valid=valid,facePresent=not profile_only,faceBox=list(box),mouthValid=mouth_valid,
             eyeValid=eye_valid,
             headPoseValid=head_pose_valid,
             mouthSource='profile_roi' if profile_only else 'face_landmarker',eyeAspectRatio=float(ear),yawOffset=abs(yaw or 0)/90,
             leftEyeAspectRatio=left_ear,rightEyeAspectRatio=right_ear,
-            pitchDeg=pitch,yawDeg=yaw,**mouth,jawOpen=blend.get("jawOpen"),
+            pitchDeg=pitch,yawDeg=yaw,**mouth,jawOpen=jaw_open,
             eyeBlinkLeft=blend.get("eyeBlinkLeft"),eyeBlinkRight=blend.get("eyeBlinkRight"),
             mouthSmileLeft=blend.get('mouthSmileLeft'),mouthSmileRight=blend.get('mouthSmileRight'),
             observedAt=at,facePixels=float(face["facePixels"]),refinement=None if profile_only else [float(x) for x in refined],
             quality=quality)
 
+    def _face_heading_only(self, frame, face, at):
+        quality = face_quality(frame, face['box'])
+        anchors_at = face.get('anchorsAt')
+        fresh_anchors = anchors_at is None or 0 <= at - anchors_at <= 350
+        yaw = profile_yaw(face, minimum=0) if fresh_anchors else None
+        pitch = profile_pitch(face) if fresh_anchors else None
+        head_pose_valid = bool(fresh_anchors and face['facePixels'] >= 20 and quality.get('usable') is not False and yaw is not None)
+        return dict(valid=False, facePresent=head_pose_valid, faceBox=list(face['box']), mouthValid=False, eyeValid=False,
+            headPoseValid=head_pose_valid, mouthSource='profile_roi', eyeAspectRatio=0, yawOffset=abs(yaw or 0)/90,
+            yawDeg=yaw, pitchDeg=pitch,
+            observedAt=at, facePixels=float(face['facePixels']), quality=quality)
+
     def _loop(self):
+        batch_limit = getattr(self, 'profile_cfg', {}).get('faceBatchLimit', 12)
         while not self.stop.wait(.01):
             with self.lock:
                 pending = list(self.latest.items())
                 self.latest.clear()
             for session,(frame,faces,at,state) in pending:
                 try:
+                    use_mesh = self._feature_enabled(session, 'faceMesh')
+                    use_heading = self._feature_enabled(session, 'faceHeading')
+                    if not use_mesh and not use_heading:
+                        continue
                     count = len(faces)
-                    selected = [faces[(state["cursor"]+i)%count] for i in range(min(12,count))] if count else []
-                    state["cursor"] = (state["cursor"]+len(selected))%max(1,count)
+                    mesh_candidates = [f for f in faces if f.get('facePixels', 0) >= 24]
+                    m_count = len(mesh_candidates)
+                    selected = [mesh_candidates[(state["cursor"]+i)%m_count] for i in range(min(batch_limit,m_count))] if m_count else []
+                    state["cursor"] = (state["cursor"]+len(selected))%max(1,m_count)
+                    selected_ids = {f["id"] for f in selected}
+                    self._dense_face_batch = count > 6
                     alive = {face["id"] for face in faces}
                     state['profileRois'] = {key:value for key,value in state.get('profileRois',{}).items() if key in alive}
                     cache = {key:value for key,value in state["faceCache"].items() if key in alive}
@@ -540,9 +695,24 @@ class Perception:
                             active=self.sessions.get(session) is state
                         if not active:
                             break
-                        measurement = self._face(frame,face,at,session,state)
+                        measurement = self._face(frame,face,at,session,state) if use_mesh else self._face_heading_only(frame,face,at)
                         if measurement:
+                            existing = cache.get(face["id"])
+                            if (not measurement.get('valid') and not measurement.get('headPoseValid')
+                                    and existing and (existing.get('valid') or existing.get('headPoseValid'))
+                                    and 0 <= at - existing.get('observedAt', 0) <= 350):
+                                continue
                             cache[face["id"]] = measurement
+                    if use_heading:
+                        for face in faces:
+                            if face["id"] in selected_ids:
+                                continue
+                            existing = cache.get(face["id"])
+                            if existing and existing.get('valid') and at - existing.get('observedAt', 0) <= 1000:
+                                continue
+                            quick = self._face_heading_only(frame, face, at)
+                            if quick.get('headPoseValid'):
+                                cache[face["id"]] = quick
                     state["faceCache"] = cache
                     output = {}
                     for face in faces:
@@ -551,6 +721,7 @@ class Perception:
                     with self.lock:
                         if self.sessions.get(session) is state:
                             self.results[session] = output
+                            state['faceAt'] = at
                             self.timings['faceLatencyMs']=int(time.time()*1000)-at
                     self.face_error = None
                 except Exception as error:
@@ -579,6 +750,8 @@ class Perception:
                 self.scene_latest.clear()
             for session,(frame,faces,at,state) in pending:
                 try:
+                    if not self._feature_enabled(session, 'objects'):
+                        continue
                     before = state["objectsAt"]
                     self._scene(state,frame,at)
                     if state["objectsAt"] == before:
@@ -631,10 +804,9 @@ class Perception:
         self.stop.set()
         self.thread.join(timeout=10)
         self.scene_thread.join(timeout=10)
-        self.body_thread.join(timeout=10)
         self.pose_thread.join(timeout=10)
         self.rest_thread.join(timeout=10)
         self.actions.close()
-        self.face.close()
-        self.profile.close()
-        self.hands.close()
+        if self.face is not None: self.face.close()
+        if self.profile is not None: self.profile.close()
+        if self.hands is not None: self.hands.close()

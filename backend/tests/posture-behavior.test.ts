@@ -214,8 +214,9 @@ describe('posture integration and lifecycle',()=>{
     expect(result!.attention).toBe('needs_attention');
     expect(result!.signals!.find(s=>s.type==='eyes_closed')!.state).toBe('unavailable');
   });
-  it('flags a slump even with book context and without a face; holds the alert without renewing old evidence',()=>{
-    const evaluator=new AttentionEvaluator();
+  it('flags a slump even with book context and without a face; holds the alert without renewing old evidence',async()=>{
+    const {defaultObservationSettings}=await import('../src/observation-settings.js');
+    const evaluator=new AttentionEvaluator({...defaultObservationSettings(),objectsEnabled:true});
     for(let at=1000;at<=13000;at+=500)evaluator.evaluate([track(at)],at);
     let result:StudentTrack;
     for(let at=14000;at<=15500;at+=500){

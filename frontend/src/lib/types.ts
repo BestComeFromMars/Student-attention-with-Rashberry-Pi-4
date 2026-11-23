@@ -121,5 +121,16 @@ export interface HealthResponse {
   status: 'ok' | 'loading' | 'error';
   error?: string;
   modelReady: boolean;
-  detector?: 'facemesh' | 'classroom';
+  detector?: 'classroom';
+  capabilities?: {
+    profile?: string;
+    maxDetectEdge?: number;
+    maxTrackEdge?: number;
+    people?: string;
+    [key: string]: unknown;
+  };
+  metrics?: {
+    privateMemoryMB?: number;
+    [key: string]: unknown;
+  };
 }

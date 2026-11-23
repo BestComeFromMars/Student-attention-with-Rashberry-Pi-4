@@ -29,7 +29,7 @@ export default function PixelPreview({session,scope}:{session:ObservationSession
       presentedAt:performance.now(),processingMs:frame.processingMs,boxes:frame.boxes}}));
   }),[session,scope]);
   return <><canvas ref={canvas} className="pixel-preview" aria-label="Video và bbox cùng khung hình"
-    style={{position:'absolute',inset:0,width:'100%',height:'100%',visibility:'hidden'}}/>
+    style={{visibility:'hidden'}}/>
     <AnimatedOverlays tracks={geometry.tracks} objects={geometry.objects} scope={scope} layoutState={layout.current} instant/>
   </>;
 }

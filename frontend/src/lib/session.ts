@@ -4,6 +4,7 @@ import {AttentionCaptures,captureFace,type AttentionCapture} from './attention-c
 import {DetectionHistory} from './history';
 import {FrameEncoder} from './frame-encoder';
 import {currentGeometry} from './current-geometry';
+import {evaluatePlayback,playbackEvaluator,readEditablePlayback,type EditablePlayback} from './playback-analysis';
 import type {CameraFrame} from './pixel-camera';
 
 export const PI_SHUTDOWN_WAIT_MS=20000;
@@ -11,6 +12,10 @@ export const PI_SHUTDOWN_WAIT_MS=20000;
 export interface SessionSnapshot {
   memory?:import('./types').MemoryStatus;
   camera: CameraState;
+  playback?: boolean;
+  playbackEnded?: boolean;
+  playbackClip?: PlaybackClip;
+  playbackOverlay?: boolean;
   detection: DetectionState;
   error: string | null;
   tracks: StudentTrack[];
@@ -47,6 +52,15 @@ interface Dependencies {
   now: () => number;
 }
 
+export const PLAYBACK_CLIPS = ['class100', 'class101', 'class102'] as const;
+export type PlaybackClip = typeof PLAYBACK_CLIPS[number];
+interface PlaybackPortrait {
+  trackId:string;owner:string|number;captured:number;photo:string;warningAt?:number;kind?:'person'|'face';preferred?:boolean;
+}
+interface PlaybackSample { at: number; tracks: StudentTrack[]; portraits?: PlaybackPortrait[] }
+interface PlaybackManifest { version: string; samples: PlaybackSample[]; editable?:string }
+interface PlaybackOverlayFrame {keys:string[];boxes:number[];tracks:StudentTrack[];objects:TrackedObject[]}
+
 function cameraError(error: unknown): string {
   const name = error instanceof Error || (typeof error === 'object' && error !== null && 'name' in error)
     ? String(error.name) : '';
@@ -75,6 +89,15 @@ export class ObservationSession {
   private portraitPublish:ReturnType<typeof setTimeout>|undefined;
   private stream: MediaStream | null = null;
   private video: HTMLVideoElement | null = null;
+  private playbackRequest: AbortController | null = null;
+  private playback: { samples: PlaybackSample[]; next: number; seenAt: Map<number, number>;
+    portraits: Map<string, PlaybackPortrait>; editable?:EditablePlayback;
+    evaluator?:ReturnType<typeof playbackEvaluator>; mediaTime:number } | null = null;
+  private playbackPresenter:((frame:PlaybackOverlayFrame)=>void)|null=null;
+  attachPlaybackOverlay=(present:(frame:PlaybackOverlayFrame)=>void)=>{
+    this.playbackPresenter=present;this.paintPlayback();
+    return ()=>{if(this.playbackPresenter===present)this.playbackPresenter=null;};
+  };
   private piImage:HTMLImageElement|null=null;
   private resultCanvas:HTMLCanvasElement|null=null;
   private presenter:((frame:import('./pixel-camera').CameraFrame|null)=>void)|null=null;
@@ -89,7 +112,7 @@ export class ObservationSession {
   }
   private beginHistory(){
     if(this.history&&!this.history.getSnapshot().activeId){
-      this.history.begin(this.state.selectedDevice===PI_DEVICE?'pi':'webcam',this.state.cameraLabel||'Camera');this.newCaptures();
+      this.history.begin(this.state.playback?'video':this.state.selectedDevice===PI_DEVICE?'pi':'webcam',this.state.cameraLabel||'Camera');this.newCaptures();
     }
   }
   private capturePortraits(frame:CameraFrame){
@@ -194,7 +217,7 @@ export class ObservationSession {
       update.detection === 'paused' && this.state.detection === 'running' ? 'detection_paused' : null,
       update.error && update.error !== this.state.error ? 'camera_error' : null,
     ].filter(Boolean);
-    for (const event of events) {
+    for (const event of update.playback || this.state.playback ? [] : events) {
       // Best effort only; no old events are queued while the backend is absent.
       try { void fetch('/api/client/events', { method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Client-Event': '1' },
@@ -360,6 +383,141 @@ export class ObservationSession {
     }
   }
 
+  async startPlayback(clip:PlaybackClip) {
+    const video = this.video;
+    if (this.disposed || !video || (this.state.playbackClip===clip && !this.state.playbackEnded)) return;
+    this.stopCamera();
+    const epoch = this.cameraEpoch;
+    const controller = new AbortController();
+    this.playbackRequest = controller;
+    this.publish({ playback: true, playbackClip: clip, camera: 'requesting' });
+    try {
+      const response = await fetch('/api/playback/timeline.json', {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+      });
+      if (!response.ok) throw new Error('Chưa mở được video phát lại.');
+      const catalog = await response.json() as { clips?: Partial<Record<PlaybackClip,PlaybackManifest>> };
+      const selected = catalog.clips?.[clip];
+      if(!selected)throw new Error('Chưa mở được video ' + clip + '.');
+      const { version, samples } = selected;
+      if (!/^[0-9a-f]{16}$/.test(version) || !Array.isArray(samples) || !samples.length ||
+        samples.some((sample, index) => !sample || !Number.isFinite(sample.at) || sample.at < 0 ||
+          (index > 0 && sample.at <= samples[index - 1].at) || !Array.isArray(sample.tracks)))
+        throw new Error('Kết quả nhận diện của video không hợp lệ.');
+      if (epoch !== this.cameraEpoch) return;
+      const editable=selected.editable?await readEditablePlayback(selected.editable):undefined;
+      if(epoch!==this.cameraEpoch)return;
+      if(editable&&(!/^[0-9a-f]{16}$/.test(editable.sourceVersion)||!Number.isFinite(editable.fps)||editable.fps<=0||!Array.isArray(editable.keys)||
+        !Array.isArray(editable.frames)||!editable.frames.length||editable.measurements?.length!==samples.length))
+        throw new Error('Dữ liệu nhận diện của video không hợp lệ.');
+      this.playback = { samples, next: 0, seenAt: new Map(), portraits: new Map(), editable,
+        evaluator:editable?playbackEvaluator():undefined,mediaTime:0 };
+      video.src = '/api/playback/' + (editable?.sourceVersion??version) + '.mp4';
+      await video.play();
+      if (epoch !== this.cameraEpoch) return;
+      this.publish({ camera: 'on', detection: 'running', cameraLabel: clip, startedAt: Date.now(),playbackOverlay:Boolean(editable),
+        resolution: { width: video.videoWidth, height: video.videoHeight } });
+      this.beginHistory();
+      this.updatePlayback();
+      this.watchPlayback(video);
+    } catch (error) {
+      if (epoch !== this.cameraEpoch) return;
+      this.stopCamera();
+      this.publish({ error: error instanceof Error && error.name === 'Error'
+        ? error.message : 'Không thể phát video lớp học.' });
+    } finally {
+      if (this.playbackRequest === controller) this.playbackRequest = null;
+    }
+  }
+
+  private watchPlayback(video: HTMLVideoElement) {
+    if (this.state.detection !== 'running' || typeof video.requestVideoFrameCallback !== 'function') return;
+    this.videoFrameWait = { video, id: video.requestVideoFrameCallback((_now, frame) => {
+      this.videoFrameWait = null;
+      this.updatePlayback(frame.mediaTime);
+      this.watchPlayback(video);
+    }) };
+  }
+
+  playbackTimeUpdate = () => {
+    if (document.hidden || typeof this.video?.requestVideoFrameCallback !== 'function') this.updatePlayback();
+  };
+
+  private playbackTracks(playback:NonNullable<ObservationSession['playback']>,index:number) {
+    const raw=playback.samples[index].tracks;
+    const measured=playback.editable?.measurements[index];
+    const tracks=playback.evaluator&&measured?evaluatePlayback(playback.evaluator,raw,measured):raw;
+    return tracks.map(track=>({...track,displayName:this.names.get(track.id)||track.displayName}));
+  }
+
+  private paintPlayback() {
+    const playback=this.playback;
+    const editable=playback?.editable;
+    if(!playback||!editable||!this.playbackPresenter)return;
+    const frame=Math.max(0,Math.min(editable.frames.length-1,Math.floor(playback.mediaTime*editable.fps+.001)));
+    this.playbackPresenter({keys:editable.keys,boxes:editable.frames[frame],tracks:this.state.tracks,objects:this.state.objects??[]});
+  }
+
+  applyPlaybackSettings=()=>{
+    const playback=this.playback;
+    if(!playback?.editable)return;
+    playback.evaluator=playbackEvaluator();
+    let tracks:StudentTrack[]=[];
+    for(let index=0;index<playback.next;index++)tracks=this.playbackTracks(playback,index);
+    this.publish({tracks});
+    this.paintPlayback();
+  };
+
+  private updatePlayback(time = this.video?.currentTime ?? 0) {
+    const playback = this.playback;
+    if (!playback || this.state.detection !== 'running') return;
+    playback.mediaTime=time;
+    let update: Pick<SessionSnapshot, 'tracks' | 'captures' | 'objects'> | undefined;
+    while (playback.samples[playback.next]?.at <= time + .001) {
+      const index=playback.next++;
+      const { at, portraits } = playback.samples[index];
+      const tracks=this.playbackTracks(playback,index);
+      const wallAt=Date.now();
+      if(!playback.seenAt.has(at))playback.seenAt.set(at,wallAt);
+      const captures=this.captures.update(tracks,null,at*1000,wallAt);
+      for(const portrait of portraits??[]){
+        const previous=playback.portraits.get(portrait.trackId);
+        const warning=portrait.warningAt??0,previousWarning=previous?.warningAt??0;
+        if(!previous||previous.owner!==portrait.owner||warning>previousWarning||
+          warning===previousWarning&&portrait.preferred&&!previous.preferred)playback.portraits.set(portrait.trackId,portrait);
+      }
+      let added=false;
+      for(const track of tracks){
+        const portrait=playback.portraits.get(track.id);
+        if(!portrait)continue;
+        const seenAt=playback.seenAt.get(portrait.captured);
+        if(seenAt===undefined)continue;
+        if(portrait.warningAt!==undefined){
+          const warningWallAt=playback.seenAt.get(portrait.warningAt);
+          if(warningWallAt!==undefined&&this.captures.setPlaybackPhoto(track,String(portrait.owner),portrait.photo,
+            seenAt,portrait.warningAt,warningWallAt,portrait.preferred===true))added=true;
+        }else if(this.captures.fillPortrait(track,String(portrait.owner),portrait.photo,seenAt))added=true;
+      }
+      update = { tracks, captures:added?this.captures.snapshot():captures,objects:playback.editable?.measurements[index].objects??[] };
+    }
+    if (update) this.publish(update);
+    this.paintPlayback();
+  }
+
+  playbackFinished = () => {
+    if (!this.playback || this.state.playbackEnded) return;
+    this.updatePlayback();
+    this.invalidate();
+    this.history?.end();
+    this.publish({ detection: 'idle', playbackEnded: true });
+  };
+
+  playbackError = () => {
+    if (!this.playback) return;
+    this.stopCamera();
+    this.publish({ error: 'Không thể phát video lớp học.' });
+  };
+
   stopCamera(sendPiCommand = true) {
     this.history?.end();
     this.piStartAbort?.abort();
@@ -369,7 +527,8 @@ export class ObservationSession {
     this.deviceDiscovery = null;
     this.releaseDeviceDiscovery?.();
     this.clearResultFrame();
-    const stopPi = this.state.selectedDevice === PI_DEVICE && (this.piRequested || this.state.camera !== 'off');
+    const wasPlayback = this.state.playback;
+    const stopPi = !wasPlayback && this.state.selectedDevice === PI_DEVICE && (this.piRequested || this.state.camera !== 'off');
     this.piRequested = false;
     this.piDetectionWanted = false;
     clearTimeout(this.piTimer);
@@ -380,6 +539,14 @@ export class ObservationSession {
     this.stream?.getTracks().forEach(track => track.stop());
     this.stream = null;
     if (this.video) this.video.srcObject = null;
+    this.playbackRequest?.abort();
+    this.playbackRequest = null;
+    this.playback = null;
+    if (wasPlayback && this.video?.hasAttribute('src')) {
+      this.video.pause();
+      this.video.removeAttribute('src');
+      this.video.load();
+    }
     this.detector?.dispose();
     this.detector = null;
     this.detectorPromise = null;
@@ -387,7 +554,8 @@ export class ObservationSession {
     this.newCaptures();
     this.samples = [];
     this.publish({
-      camera: 'off', detection: 'idle', tracks: [], captures:[],objects:[],memory:undefined, fps: 0,frameReady:false,retrying:false, discoveringDevices: false,
+      camera: 'off', detection: 'idle', playback: false, playbackEnded: false, playbackClip: undefined,playbackOverlay:false,
+      tracks: [], captures:[],objects:[],memory:undefined, fps: 0,frameReady:false,retrying:false, discoveringDevices: false,
       resolution: null, cameraLabel: '', startedAt: null, error: null,
       piMessage: undefined,
     });
@@ -557,7 +725,7 @@ export class ObservationSession {
   }
 
   async selectCamera(deviceId: string) {
-    if (deviceId === this.state.selectedDevice) return;
+    if (deviceId === this.state.selectedDevice && !this.state.playback) return;
     const restart = this.state.camera !== 'off';
     this.stopCamera();
     this.publish({ selectedDevice: deviceId, ...(deviceId!==PI_DEVICE?{piMessage:undefined,piStopping:false}:{}) });
@@ -568,6 +736,23 @@ export class ObservationSession {
   async startDetection() {
     if (this.disposed || this.state.camera !== 'on' ||
       this.state.detection === 'loading' || this.state.detection === 'running') return;
+    if (this.state.playback) {
+      if (this.state.playbackEnded && this.state.playbackClip) return this.startPlayback(this.state.playbackClip);
+      const video = this.video;
+      if (!video) return;
+      const epoch = this.cameraEpoch;
+      this.publish({ detection: 'loading' });
+      try {
+        await video.play();
+        if (epoch !== this.cameraEpoch) return;
+        this.publish({ detection: 'running', error: null });
+        this.updatePlayback();
+        this.watchPlayback(video);
+      } catch {
+        if (epoch === this.cameraEpoch) this.publish({ detection: 'paused', error: 'Không thể tiếp tục phát video.' });
+      }
+      return;
+    }
     if (this.state.selectedDevice === PI_DEVICE) this.piDetectionWanted = true;
     const epoch = this.invalidate();
     this.publish({ detection: 'loading', error: null, fps: 0,inferenceMs:undefined,resultFrameAt:undefined });
@@ -604,6 +789,12 @@ export class ObservationSession {
   }
 
   pauseDetection() {
+    if (this.state.playback) {
+      this.video?.pause();
+      this.invalidate();
+      this.publish({ detection: 'paused' });
+      return;
+    }
     this.clearResultFrame();
     this.piDetectionWanted = false;
     this.invalidate();
@@ -611,6 +802,16 @@ export class ObservationSession {
   }
 
   reset() {
+    if (this.playback && !this.state.playbackEnded) {
+      this.history?.end();
+      this.names.clear();
+      this.newCaptures();
+      this.beginHistory();
+      this.playback.next = Math.max(0, this.playback.next - 1);
+      this.publish({ tracks: [], captures: [] });
+      this.updatePlayback();
+      return;
+    }
     this.history?.end();
     this.clearResultFrame();
     const running = this.state.detection === 'running';

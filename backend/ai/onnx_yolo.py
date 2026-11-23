@@ -1,4 +1,5 @@
 """Run the pinned YOLO ONNX graphs with the existing letterbox/COCO decoder."""
+import os
 import onnxruntime as ort
 from native_runtime import export_serialized
 from opencv_yolo import OpenCVYOLO
@@ -7,7 +8,10 @@ from opencv_yolo import OpenCVYOLO
 class _SessionNet:
     def __init__(self, path):
         options = ort.SessionOptions()
-        options.intra_op_num_threads = 1
+        cpu_count = os.cpu_count() or 2
+        default_threads = 2 if cpu_count >= 4 else 1
+        threads = max(1, min(4, int(os.environ.get('AI_ORT_THREADS', str(default_threads)))))
+        options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1
         options.enable_cpu_mem_arena = False
         options.enable_mem_pattern = False
@@ -19,6 +23,10 @@ class _SessionNet:
 
     def setInput(self, blob):
         self.blob = blob
+
+    @export_serialized
+    def run_blob(self, blob):
+        return self.session.run(None, {self.name: blob})[0]
 
     @export_serialized
     def forward(self):

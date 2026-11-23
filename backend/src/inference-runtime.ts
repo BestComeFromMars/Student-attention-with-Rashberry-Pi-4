@@ -56,6 +56,9 @@ export class InferenceRuntime implements InferenceEngine {
     return this.engine!.detectFrame ? this.engine!.detectFrame(jpeg,context)
       : {people:await this.engine!.detect(jpeg,context),objects:[]};
   }
+  configure(sessionId: string, features: import('./observation-settings.js').ActiveAIFeatures) {
+    if (this.ready) this.engine?.configure?.(sessionId, features);
+  }
   release(sessionId: string) { this.engine?.release?.(sessionId); }
 
   close(): Promise<void> {

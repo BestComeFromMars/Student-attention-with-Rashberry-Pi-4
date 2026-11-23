@@ -1,9 +1,8 @@
-"""YOLO11 ONNX decoding using OpenCV DNN, preserving the COCO/keypoint layout."""
+"""YOLO11 ONNX decoding using OpenCV DNN or ONNX Runtime without importing torch."""
 from types import SimpleNamespace
 import cv2
 import numpy as np
-import torch
-from ultralytics.engine.results import Boxes,Keypoints
+from light_results import NumpyBoxes, NumpyKeypoints
 
 
 class OpenCVYOLO:
@@ -23,8 +22,12 @@ class OpenCVYOLO:
         left,top=(640-nw)//2,(640-nh)//2
         image=np.full((640,640,3),114,np.uint8)
         image[top:top+nh,left:left+nw]=cv2.resize(frame,(nw,nh))
-        self.net.setInput(cv2.dnn.blobFromImage(image,1/255.,(640,640),swapRB=True,crop=False))
-        prediction=self.net.forward()
+        blob=cv2.dnn.blobFromImage(image,1/255.,(640,640),swapRB=True,crop=False)
+        if hasattr(self.net,'run_blob'):
+            prediction=self.net.run_blob(blob)
+        else:
+            self.net.setInput(blob)
+            prediction=self.net.forward()
         if isinstance(prediction,(tuple,list)):
             prediction=prediction[0]
         rows=prediction[0].T
@@ -54,7 +57,7 @@ class OpenCVYOLO:
                 points[:,0]=(points[:,0]-left)/scale
                 points[:,1]=(points[:,1]-top)/scale
                 keypoints.append(points)
-        result=SimpleNamespace(boxes=Boxes(torch.from_numpy(detections),frame.shape[:2]),keypoints=None)
+        result=SimpleNamespace(boxes=NumpyBoxes(detections,frame.shape[:2]),keypoints=None)
         if self.pose and keypoints:
-            result.keypoints=Keypoints(torch.from_numpy(np.asarray(keypoints,np.float32)),frame.shape[:2])
+            result.keypoints=NumpyKeypoints(np.asarray(keypoints,np.float32),frame.shape[:2])
         return [result]

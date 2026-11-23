@@ -41,6 +41,7 @@ export class FacialBehavior {
   private last = unknownCues();
   private closed = false;
   private yawning = false;
+  private yawnSource: FaceObservation['mouthSource'];
   private yawnSince:number|null=null;
   private speech:SpeechMotion;
   private speechAt: number | null = null;
@@ -49,12 +50,13 @@ export class FacialBehavior {
   private baselines = this.newBaselines();
 
   private newBaselines() {
-    return { eye: new Baseline(.8, 5, 1000), leftEye: new Baseline(.8, 5, 1000),
-      rightEye: new Baseline(.8, 5, 1000) };
+    return { eye: new Baseline(.8, 3, 400), leftEye: new Baseline(.8, 3, 400),
+      rightEye: new Baseline(.8, 3, 400) };
   }
   private reset() {
     this.lastAt = null;
     this.closed = this.yawning = false;
+    this.yawnSource=undefined;
     this.yawnSince=null;
     this.clearSpeech();
     this.baselines = this.newBaselines();
@@ -70,8 +72,8 @@ export class FacialBehavior {
   update(observation: FaceObservation | undefined, at: number, valid: boolean, mouthValid = valid): Cues {
     if (!observation || (!valid && !mouthValid)) {
       // Brief profile landmark dropouts suspend the published evidence. They do
-      // not erase completed cycles until 250 ms without a fresh mouth sample.
-      if (this.speechAt !== null && at >= this.speechAt && at-this.speechAt <= 250) {
+      // not erase completed cycles until 650 ms without a fresh mouth sample.
+      if (this.speechAt !== null && at >= this.speechAt && at-this.speechAt <= 650) {
         this.closed = this.yawning = false;
         this.yawnSince=null;
         this.baselines = this.newBaselines();
@@ -93,16 +95,16 @@ export class FacialBehavior {
     const minBlink = blinkKnown ? Math.min(leftBlink, rightBlink) : 0;
     const threshold = (baseline: Baseline) => {
       const reference = baseline.value(at);
-      return reference === null ? (blinkKnown ? (this.closed ? .15 : .12) : (this.closed ? .21 : .19))
-        : Math.min(this.closed ? .28 : .24, Math.max(this.closed ? .15 : .12, reference * (this.closed ? .78 : .65)));
+      return reference === null ? (blinkKnown ? (this.closed ? .18 : .16) : (this.closed ? .21 : .19))
+        : Math.min(this.closed ? .28 : .24, Math.max(this.closed ? .16 : .14, reference * (this.closed ? .78 : .68)));
     };
     const bothEyeRatios = available(leftEar) && available(rightEar);
     const bothClosed = bothEyeRatios && leftEar <= threshold(this.baselines.leftEye) && rightEar <= threshold(this.baselines.rightEye);
     const geometryClosed = available(ear) && ear <= threshold(this.baselines.eye) && (!bothEyeRatios || bothClosed);
     // Clear geometric closure and strong bilateral blendshapes are independent evidence.
-    const supportedClosure = available(ear) && ear < (this.closed ? .21 : .19) && blinkKnown &&
-      blink >= (this.closed ? .35 : .45) && minBlink >= (this.closed ? .2 : .25);
-    const blendClosure = blinkKnown && blink >= (this.closed ? .60 : .75) && minBlink >= (this.closed ? .50 : .65);
+    const supportedClosure = available(ear) && ear < Math.max(this.closed ? .22 : .20, threshold(this.baselines.eye) * 1.06) && blinkKnown &&
+      blink >= (this.closed ? .32 : .40) && minBlink >= (this.closed ? .18 : .22);
+    const blendClosure = blinkKnown && blink >= (this.closed ? .55 : .68) && minBlink >= (this.closed ? .45 : .58);
     const wink = blinkKnown && Math.abs(leftBlink - rightBlink) > .6 && minBlink < .2 && !bothClosed;
     const eyeClosed = available(ear) || blinkKnown ? !wink && (geometryClosed || supportedClosure || blendClosure) : null;
     this.closed = eyeClosed === true;
@@ -124,32 +126,42 @@ export class FacialBehavior {
     // A moderate speech vowel plus a high jaw blendshape is not sufficient
     // yawning evidence. The weaker aperture route needs bilateral eye squeeze.
     const eyeSqueeze=blinkKnown&&blink>=.55&&minBlink>=.35;
+    if(this.yawnSource!==observation.mouthSource){
+      this.yawning=false;
+      this.yawnSince=null;
+      this.yawnSource=observation.mouthSource;
+    }
+    const profileMouth=mouthValid&&observation.mouthSource==='profile_roi'&&
+      (observation.facePixels??0)>=64&&observation.quality?.usable!==false;
     const yawn = valid && (mouthKnown || jawKnown) ?
-      (mouthKnown && (mouth >= (this.yawning ? .45 : .55) ||
+      (mouthKnown && (mouth >= (this.yawning ? .43 : .52) ||
         (eyeSqueeze&&jawKnown && mouth >= (this.yawning ? .28 : .35) && jaw >= (this.yawning ? .45 : .55)))) ||
-      (!mouthKnown && eyeSqueeze&&jawKnown && jaw >= (this.yawning ? .60 : .70)) : null;
+      (!mouthKnown && eyeSqueeze&&jawKnown && jaw >= (this.yawning ? .60 : .70)) :
+      profileMouth&&mouthKnown ? mouth >= (this.yawning ? .60 : .70) : null;
     this.yawning = yawn === true;
     if(yawn)this.yawnSince??=at;else this.yawnSince=null;
     const sustainedYawn=this.yawnSince!==null&&at-this.yawnSince>=this.thresholds.yawnMs;
 
     let talking: Cues['talking'] = { state: 'unavailable', durationMs: 0 };
     const speechImage=observation.quality?.usable!==false&&
-      (observation.facePixels===undefined||Number.isFinite(observation.facePixels)&&observation.facePixels>=64);
+      (observation.facePixels===undefined||Number.isFinite(observation.facePixels)&&observation.facePixels>=52);
     if ((mouthKnown || jawKnown)&&speechImage) {
       if (this.mouthSource !== observation.mouthSource) this.clearSpeech();
       this.mouthSource = observation.mouthSource;
       this.speechAt = at;
       const pitch=typeof observation.pitchDeg==='number'&&Number.isFinite(observation.pitchDeg)?observation.pitchDeg:null;
       const speechYaw=typeof yaw==='number'&&Number.isFinite(yaw)?yaw:null;
-      const poseJump=this.speechPose&&at>this.speechPose.at&&at-this.speechPose.at<=750&&
-        (speechYaw!==null&&this.speechPose.yaw!==null&&Math.abs(speechYaw-this.speechPose.yaw)>8||
-          pitch!==null&&this.speechPose.pitch!==null&&Math.abs(pitch-this.speechPose.pitch)>8);
+      const poseDt=this.speechPose?at-this.speechPose.at:0;
+      const poseLimit=poseDt<=300?13:22;
+      const poseJump=this.speechPose&&at>this.speechPose.at&&poseDt<=750&&
+        (speechYaw!==null&&this.speechPose.yaw!==null&&Math.abs(speechYaw-this.speechPose.yaw)>poseLimit||
+          pitch!==null&&this.speechPose.pitch!==null&&Math.abs(pitch-this.speechPose.pitch)>poseLimit);
       this.speechPose={yaw:speechYaw,pitch,at};
       const smiling=available(observation.mouthSmileLeft)&&available(observation.mouthSmileRight)&&
         (observation.mouthSmileLeft+observation.mouthSmileRight)/2>=.45&&Math.min(observation.mouthSmileLeft,observation.mouthSmileRight)>=.3;
-      if (sustainedYawn||smiling||poseJump) {
+      if (sustainedYawn||poseJump) {
         this.speech.clear();
-      } else {
+      } else if (!smiling) {
         this.speech.update(mouthKnown ? mouth : null, jawKnown ? jaw : null, at);
       }
       const { count, durationMs,observedAt,active } = this.speech.evidence;

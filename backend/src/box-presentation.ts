@@ -21,9 +21,9 @@ export class BoxPresentation {
     const before=previous.box,cx=box.x+box.width/2,cy=box.y+box.height/2;
     const px=before.x+before.width/2,py=before.y+before.height/2;
     const movement=Math.max(Math.abs(cx-px)/box.width,Math.abs(cy-py)/box.height);
-    // Fast motion catches up immediately; small detector/scale corrections are damped.
-    const position=1-Math.exp(-dt/(movement>.15?28:110));
-    const scale=1-Math.exp(-dt/210);
+    // Fast 1:1 tracking: catch up immediately; damp only micro-jitter.
+    const position=1-Math.exp(-dt/(movement>.10?12:35));
+    const scale=1-Math.exp(-dt/130);
     const width=clamp(before.width+(box.width-before.width)*scale,box.width*.88,box.width*1.12);
     const height=clamp(before.height+(box.height-before.height)*scale,box.height*.88,box.height*1.12);
     const x=Math.abs(cx-px)<=box.width*.01?px:px+(cx-px)*position;

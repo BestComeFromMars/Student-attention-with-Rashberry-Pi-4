@@ -59,7 +59,7 @@ try{
   const field=name=>page.getByRole('spinbutton',{name,exact:true});
   const save=async()=>{await page.getByRole('button',{name:'Lưu ngưỡng',exact:true}).click();await settings().getByRole('status').filter({hasText:'Đã lưu'}).waitFor();};
   const close=()=>page.getByRole('button',{name:'Đóng ngưỡng nhận diện'}).click();
-  const stored=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('student-attention.observation-settings.v2')));
+  const stored=()=>page.evaluate(()=>JSON.parse(localStorage.getItem('student-attention.observation-settings.v4')));
   await open();assert.equal(await settings().getByRole('checkbox').count(),11);
   assert.equal(await settings().locator('.threshold-row').count(),11);
   assert(await settings().locator('.threshold-editable').count()>20);

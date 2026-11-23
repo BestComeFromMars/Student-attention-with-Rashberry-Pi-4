@@ -2,6 +2,7 @@ import {describe,it,expect,vi} from 'vitest';
 import {createServer} from 'node:http';
 import {createApp} from '../src/app.js';
 import {InferenceRuntime} from '../src/inference-runtime.js';
+import {defaultObservationSettings} from '../src/observation-settings.js';
 import type {InferenceEngine} from '../src/types.js';
 
 describe('production inference runtime camera bridge',()=>{
@@ -26,7 +27,8 @@ describe('production inference runtime camera bridge',()=>{
     const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
     const jpeg=new Uint8Array([255,216,255,217]);
     try{
-      const created=await fetch(origin+'/api/sessions',{method:'POST'});
+      const created=await fetch(origin+'/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({settings:{...defaultObservationSettings(),objectsEnabled:true}})});
       const {sessionId}=await created.json();
       const tracked=await fetch(origin+`/api/sessions/${sessionId}/track`,{method:'POST',body:jpeg,
         headers:{'Content-Type':'image/jpeg','X-Frame-Id':'11','X-Frame-Captured-At':'1234.5'}});
@@ -39,7 +41,8 @@ describe('production inference runtime camera bridge',()=>{
       expect((await detected.json()).tracks[0].id).toBe('A');
       expect(detect).toHaveBeenCalledWith(Buffer.from(jpeg),{sessionId,frameId:11});
       expect(seeds).toHaveBeenCalledWith(sessionId,[
-        {key:'person:A',box,frameId:11},{key:'face:A',box:face,frameId:11},{key:'object:O1',box:face,frameId:11},
+        {key:'person:A',box,frameId:11,owner:7},{key:'face:A',box:face,frameId:11,owner:7},
+        {key:'object:O1',box:face,frameId:11},
       ]);
       expect((await fetch(origin+`/api/sessions/${sessionId}`,{method:'DELETE'})).status).toBe(204);
       expect(release).toHaveBeenCalledWith(sessionId);

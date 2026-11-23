@@ -6,7 +6,7 @@ from ultralytics import YOLO
 
 torch.set_num_threads(1)
 root=Path(sys.argv[1])
-for name in ['yolo11s','yolo11m','yolo11n-pose']:
+for name in ['yolo11n','yolo11s','yolo11m','yolo11n-pose']:
     target=root/(name+'.onnx')
     if target.exists():
         continue

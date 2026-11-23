@@ -1,39 +1,50 @@
 import unittest
-from memory_budget import MemoryBudget,select_people
+from memory_budget import MemoryBudget, select_people, DEFAULT_CEILING
+
 
 class MemoryBudgetTests(unittest.TestCase):
-    def test_eight_and_sixteen_gb_profiles_still_use_available_ram(self):
-        self.assertEqual(MemoryBudget(lambda:(8192,5000)).limit,20)
-        self.assertEqual(MemoryBudget(lambda:(16384,7000)).limit,40)
-        self.assertEqual(MemoryBudget(lambda:(16384,1700)).limit,1)
+    def test_uncapped_by_default_and_only_reduces_under_critical_pressure(self):
+        self.assertEqual(MemoryBudget(lambda: (8192, 2000)).limit, DEFAULT_CEILING)
+        self.assertEqual(MemoryBudget(lambda: (16384, 1200)).limit, DEFAULT_CEILING)
+        self.assertFalse(MemoryBudget(lambda: (16384, 1200)).pressure)
+        low = MemoryBudget(lambda: (16384, 150))
+        self.assertTrue(low.pressure)
+        self.assertLess(low.limit, DEFAULT_CEILING)
+        oom = MemoryBudget(lambda: (16384, 64))
+        self.assertEqual(oom.limit, 1)
 
-    def test_admission_never_fully_stops_and_recovery_is_gradual(self):
-        now=[0.];available=[5000.]
-        budget=MemoryBudget(lambda:(8192,available[0]),lambda:now[0])
-        self.assertEqual(budget.limit,20)
-        now[0]=2.;available[0]=100
-        self.assertEqual(budget.update(20),8) # keep the largest remaining safety budget
-        now[0]=4.;self.assertEqual(budget.update(8),1)
-        available[0]=5000;now[0]=6.;self.assertEqual(budget.update(1),1)
-        now[0]=14.;self.assertEqual(budget.update(1),3)
-        now[0]=16.;self.assertEqual(budget.update(3),3)
-        now[0]=24.;self.assertEqual(budget.update(3),5)
+    def test_auto_reduces_on_critical_memory_and_recovers_when_freed(self):
+        now = [0.]
+        available = [3000.]
+        budget = MemoryBudget(lambda: (8192, available[0]), lambda: now[0])
+        self.assertEqual(budget.limit, DEFAULT_CEILING)
+        now[0] = 2.
+        available[0] = 150.
+        self.assertEqual(budget.update(20), 10)
+        now[0] = 4.
+        available[0] = 64.
+        self.assertEqual(budget.update(10), 1)
+        available[0] = 2000.
+        now[0] = 6.
+        self.assertEqual(budget.update(1), 1)
+        now[0] = 9.
+        self.assertEqual(budget.update(1), 9)
+        now[0] = 12.
+        self.assertEqual(budget.update(9), 17)
 
-    def test_warning_requires_exceeding_capacity_not_a_missing_face(self):
-        budget=MemoryBudget(lambda:(8192,5000))
-        self.assertFalse(budget.status(2,1)['limited'])
-        self.assertTrue(budget.status(21,20)['limited'])
-        for _ in range(8):budget.reduce()
-        self.assertEqual(budget.limit,1)
+    def test_warning_requires_exceeding_capacity_and_oom_reduce_halves_limit(self):
+        budget = MemoryBudget(lambda: (8192, 5000))
+        self.assertFalse(budget.status(25, 25)['limited'])
+        self.assertTrue(budget.status(DEFAULT_CEILING + 1, DEFAULT_CEILING)['limited'])
+        for _ in range(10):
+            budget.reduce()
+        self.assertEqual(budget.limit, 1)
 
-    def test_selects_established_people_then_quality_and_releases_excess_templates(self):
-        from person_tracking import PersonTracking
-        values=[dict(id=1,confidence=.4),dict(id=2,confidence=.8),dict(id=3,confidence=.9)]
-        self.assertEqual([v['id'] for v in select_people(values,2,[1])],[1,3])
-        self.assertEqual(select_people(values,3),values)
-        tracker=PersonTracking();tracker.tracks=values;tracker.visual.items={v['id']:object() for v in values}
-        tracker.allowed={1,2,3};tracker.set_limit(1)
-        self.assertEqual(len(tracker.tracks),1);self.assertEqual(list(tracker.visual.items),[1]);self.assertEqual(tracker.allowed,{1})
-        tracker.close()
+    def test_selects_established_people_then_quality(self):
+        values = [dict(id=1, confidence=.4), dict(id=2, confidence=.8), dict(id=3, confidence=.9)]
+        self.assertEqual([v['id'] for v in select_people(values, 2, [1])], [1, 3])
+        self.assertEqual(select_people(values, 3), values)
 
-if __name__=='__main__':unittest.main()
+
+if __name__ == '__main__':
+    unittest.main()

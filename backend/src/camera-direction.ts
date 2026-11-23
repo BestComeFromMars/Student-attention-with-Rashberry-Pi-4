@@ -7,6 +7,6 @@ export function bodyYawDegrees(proxy:number){
   return -Math.atan(2*proxy)*180/Math.PI;
 }
 export function configuredCameraYaw(){
-  const value=Number(process.env.AI_CAMERA_YAW_DEG??0);
+  const value=Number(typeof process==='undefined'?0:process.env.AI_CAMERA_YAW_DEG??0);
   return Number.isFinite(value)&&Math.abs(value)<=90?value:0;
 }

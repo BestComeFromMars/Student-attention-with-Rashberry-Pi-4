@@ -15,18 +15,20 @@ def overlap(a,b):
 
 
 class SceneObjects:
-    def __init__(self,primary,device='cpu'):
-        self.primary,self.device=primary,device
+    def __init__(self,primary,device='cpu',tile_crop=True):
+        self.primary,self.device,self.tile_crop=primary,device,tile_crop
         self.rejected_laptops=0
 
     def detect(self,model,image):
         result=model.predict(image,imgsz=640,classes=TARGETS,conf=.2,device=self.device,verbose=False)[0]
-        return result.boxes.data.cpu().numpy().astype(float).tolist()
+        raw=result.boxes.data
+        raw=raw.cpu().numpy() if hasattr(raw,'cpu') else np.asarray(raw)
+        return raw.astype(float).tolist()
 
     def predict(self,frame,cursor=0):
         h,w=frame.shape[:2];full=self.detect(self.primary,frame);rows=list(full)
         tile=None
-        if min(h,w)>=240:
+        if self.tile_crop and min(h,w)>=240:
             # One overlapping tile per scene update; a complete pass takes four
             # updates, without making a frame wait for an unbounded crop queue.
             x=int(w*.4)*(cursor%2);y=int(h*.4)*((cursor//2)%2)

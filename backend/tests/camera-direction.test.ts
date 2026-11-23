@@ -63,6 +63,18 @@ describe('per-person camera direction and independent evidence sources',()=>{
     expect(result!.signals!.find(s=>s.type==='eyes_closed')!.state).toBe('unavailable');
     expect(result!.signals!.find(s=>s.type==='talking')!.state).toBe('unavailable');
   });
+  it('uses newer head keypoints instead of repeatedly publishing an older face pose',()=>{
+    const evaluator=new AttentionEvaluator();
+    const observation={valid:true,eyeAspectRatio:.3,yawOffset:0,yawDeg:0,observedAt:1000,
+      headYaw:-.5,headObservedAt:1000,headSource:'body_keypoints' as const};
+    const track:StudentTrack={id:'A',displayName:'A',color:'',status:'visible',lastSeen:1000,
+      faceVisibility:'visible',box:{x:.2,y:.2,width:.1,height:.1},observation};
+    const warning=(now:number)=>evaluator.evaluate([track],now)[0].signals!.find(signal=>signal.type==='head_turned');
+    expect(warning(1000)?.state).toBe('clear');
+    observation.headObservedAt=1800;
+    expect(warning(1800)).toMatchObject({state:'pending',observedAt:1800});
+    expect(warning(2000)).toMatchObject({state:'pending',durationMs:0});
+  });
   it('clears stale face ownership when a body loses its face, and keeps the body ID through a face-only alias',()=>{
     const tracker=new StudentTracker(),box={x:.2,y:.2,width:.2,height:.5};
     const person:DetectedPerson={personId:7,geometryId:10,box,personBox:box,faceBox:{x:.23,y:.21,width:.05,height:.06},

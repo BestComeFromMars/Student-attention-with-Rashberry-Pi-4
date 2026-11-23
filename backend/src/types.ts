@@ -173,12 +173,13 @@ export interface InferenceEngine {
   seedGeometry?(sessionId:string,seeds:import('./pixel-tracker.js').PixelSeed[]):void;
   startupState?: 'loading' | 'ready' | 'error';
   startupError?: string;
-  detector?: 'classroom' | 'facemesh';
+  detector?: 'classroom';
   capabilities?: AICapabilities;
   metrics?: Record<string, unknown>;
   ready: boolean;
   detect(jpeg: Buffer, context?: { sessionId: string; frameAt?:number }): Promise<DetectedPerson[]>;
   detectFrame?(jpeg: Buffer, context?: { sessionId: string; frameAt?:number;frameId?:number }): Promise<FrameDetections>;
+  configure?(sessionId: string, features: import('./observation-settings.js').ActiveAIFeatures): void;
   release?(sessionId: string): void;
   close(): Promise<void>;
 }

@@ -38,8 +38,8 @@ export default function HistoryPanel({state,session,history,inert=false}:{state:
         {saved.selectedId===run.id&&<div className="history-run-content">{saved.loading?<p className="history-loading">Đang tải…</p>:
           !captures.length?<div className="history-no-alert"><ScanFace size={24}/><p>Chưa có cảnh báo trong lần này.</p></div>:
           <ul className="attention-list" aria-label={`Người đã ghi nhận trong Lần ${run.number}`}>{captures.map(capture=><li className="attention-card" key={capture.captureId} data-capture-id={capture.trackId}>
-            <div className="attention-portrait">{capture.photoUrl?<img src={capture.photoUrl} alt={`Ảnh mặt ${capture.displayName} khi ghi nhận cảnh báo`}/>:
-              <div className="attention-no-face"><ScanFace size={26}/><span>Chưa chụp được mặt</span></div>}<span className="attention-person-id">{capture.trackId}</span></div>
+            <div className="attention-portrait history-photo">{capture.photoUrl?<img src={capture.photoUrl} alt={`Ảnh ${capture.displayName} khi ghi nhận cảnh báo`}/>:
+              <div className="attention-no-face"><ScanFace size={26}/><span>Chưa có ảnh</span></div>}<span className="attention-person-id">{capture.trackId}</span></div>
             <div className="attention-details"><div className="attention-person-title">{editing===capture.captureId?
               <input autoFocus aria-label={`Tên học sinh ${capture.trackId}`} maxLength={60} defaultValue={capture.displayName}
                 onBlur={event=>{session.rename(capture.trackId,event.currentTarget.value);setEditing(undefined);}}
@@ -48,11 +48,11 @@ export default function HistoryPanel({state,session,history,inert=false}:{state:
               <span className={'attention-state '+(active.has(capture.trackId)&&editable(capture)?'is-active':'')}>{active.has(capture.trackId)&&editable(capture)?'Đang cảnh báo':'Đã ghi nhận'}</span></div>
               <ul className="attention-reasons">{capture.labels.map(label=><li key={label}>{label}</li>)}</ul>
               <p className="attention-time"><time dateTime={new Date(capture.lastAt).toISOString()}>{time(capture.lastAt)}</time> · {capture.count} đợt cảnh báo</p>
-              {capture.photoBeforeAlert&&<p className="attention-photo-note">Ảnh mặt trước cảnh báo{capture.photoAt?' · '+time(capture.photoAt):''}</p>}
+              {capture.photoBeforeAlert&&<p className="attention-photo-note">Ảnh trước cảnh báo{capture.photoAt?' · '+time(capture.photoAt):''}</p>}
             </div></li>)}</ul>}</div>}
       </section>)}
     </div>
     {saved.savingError&&<p className="history-error" role="status">{saved.savingError}</p>}
-    <p className="attention-footnote">Lưu trên máy này. Mỗi người giữ một ảnh mới nhất trong mỗi lần nhận diện.</p>
+    <p className="attention-footnote">Lưu trên máy này. Mỗi học sinh chỉ lưu ảnh và biểu hiện mất tập trung gần nhất trong mỗi lần nhận diện.</p>
   </section>;
 }

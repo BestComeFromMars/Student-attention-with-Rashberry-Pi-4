@@ -25,11 +25,14 @@ def project_anchors(track,width,height):
 
 
 class FaceGeometry:
-    def __init__(self,model_path,max_faces=40):
+    def __init__(self,model_path,max_faces=40,face_max_edge=960,history_limit=12,skip_low_light_normal=False):
         from scrfd import VerifiedFaceDetector
         self.detector = VerifiedFaceDetector(model_path)
         self.fast = FastFaceTracking(model_path,self.detector.scrfd) if hasattr(self.detector,'yunet') else None
         self.max_faces = max_faces
+        self.face_max_edge = face_max_edge
+        self.history_limit = max(2, int(history_limit))
+        self.skip_low_light_normal = skip_low_light_normal
         self.candidate_count = 0
         self.tracks = []
         self.visual = FaceVisualTracker()
@@ -276,7 +279,7 @@ class FaceGeometry:
         if self._dense_scene(bodies):
             with self.lock:
                 self.request=None;self.completed=None
-            detections=self._detect(frame)
+            detections=self._detect(frame,max_edge=min(800,max(640,getattr(self,'face_max_edge',640))))
             self._merge(detections,now_ms)
             self.last_scan=now_ms
             for track in self.tracks:
@@ -295,15 +298,17 @@ class FaceGeometry:
                 missedAt=t.get('missedAt')) for t in self.tracks if t['seen']==now_ms]
         # Newly entering small/second faces must not invalidate all pending
         # snapshots and native templates by switching 640 <-> 960.
-        scale = min(1.,960/max(width,height))
+        scale = min(1., getattr(self, 'face_max_edge', 960) / max(width, height))
         tracking_frame = cv2.resize(frame,None,fx=scale,fy=scale) if scale<1 else frame
-        brighter=enhance_low_light(tracking_frame)
-        if brighter is not None:tracking_frame=brighter
+        if not getattr(self, 'skip_low_light_normal', False):
+            brighter=enhance_low_light(tracking_frame)
+            if brighter is not None:tracking_frame=brighter
         # A tracker expects consecutive images. Detector jobs may finish several
         # frames late; replay those real intervening images through VitTrack
         # instead of asking it to jump across a fast head turn in one update.
+        keep_count = max(1, getattr(self, 'history_limit', 12) - 1)
         self.history=[(at,image) for at,image in self.history if
-                      now_ms-at<=1500 and image.shape==tracking_frame.shape][-11:]
+                      now_ms-at<=1500 and image.shape==tracking_frame.shape][-keep_count:]
         self.history.append((now_ms,tracking_frame))
         prepared_at=time.perf_counter()
         self._drop_body_duplicates(now_ms)
@@ -316,7 +321,7 @@ class FaceGeometry:
             if proof is not None:track['verifiedAt']=max(track.get('verifiedAt',-10000),proof['at'])
         fast_ids=self.fast.update(frame,self.tracks,now_ms) if self.fast is not None else set()
         self.visual.update(tracking_frame,self.tracks,now_ms,only_ids={t['id'] for t in self.tracks}-fast_ids)
-        if self.fast is not None and any(t['id'] not in fast_ids and (t.get('visualLostAt') or t.get('missedScans',0)) for t in self.tracks):
+        if self.fast is not None and any(t['id'] not in fast_ids and (len(self.tracks)<=4 or t.get('visualLostAt') or t.get('missedScans',0)) for t in self.tracks):
             fast_ids|=self.fast.update(frame,self.tracks,now_ms,rotate=True)
         fast_boxes={t['id']:{key:t[key] for key in ('box','anchors','relativeAnchors','fastFaceAt','fastFaceScore','fastFaceModel','visualAt')}
                     for t in self.tracks if t['id'] in fast_ids}
@@ -381,16 +386,16 @@ class FaceGeometry:
         for track in self.tracks:
             follow_body(track,bodies,owners or {},now_ms)
         self._drop_body_duplicates(now_ms)
-        self.tracks = [track for track in self.tracks if now_ms-track['seen']<=2000 or
-            (now_ms-track.get('visualAt',-100000)<250 and now_ms-track['seen']<5000) or
-            now_ms-track.get('bodyAt',-100000)<=1800][:self.max_faces]
+        self.tracks = [track for track in self.tracks if now_ms-track['seen']<=1000 or
+            (now_ms-track.get('visualAt',-100000)<250 and now_ms-track['seen']<1200) or
+            now_ms-track.get('bodyAt',-100000)<=900][:self.max_faces]
         self.visual.seed(tracking_frame,self.tracks)
         finished=time.perf_counter()
         self.timings=dict(prepareMs=round((prepared_at-started)*1000,2),
                           visualMs=round((tracked-prepared_at)*1000,2),
                           refreshMs=round((finished-tracked)*1000,2))
         return [dict(id=t["id"],box=list(t["box"]),score=t["score"],anchors=project_anchors(t,width,height),
-                     detectedAt=t['seen'],facePixels=float(t["box"][2]*width),
+                     detectedAt=t['seen'],anchorsAt=max(t.get('seen',0),t.get('fastFaceAt') or 0),facePixels=float(t["box"][2]*width),
                      detectorVerified=t.get('detectorVerified',False),evidenceMode=t.get('evidenceMode'),
                      verifiedAt=t.get('verifiedAt'),
                      detectorModel=t.get('detectorModel'),

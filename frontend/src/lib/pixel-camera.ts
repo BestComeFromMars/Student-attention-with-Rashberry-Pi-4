@@ -1,4 +1,5 @@
 import {FrameEncoder} from './frame-encoder';
+import {getRuntimeProfileHints} from './detection-settings';
 import type {Box} from './types';
 
 export interface GeometryFrame {frameId:number;boxes:{key:string;box:Box}[];processingMs:number;discarded?:boolean}
@@ -12,6 +13,8 @@ export class PixelCamera {
   private active=true;
   private presented=0;
   private inFlight=0;
+  private failures=0;
+  private imageSurface:HTMLCanvasElement|null=null;
   private latest:{image:ImageBitmap;id:number;at:number}|null=null;
   private callback=0;
   private raf=0;
@@ -54,9 +57,21 @@ export class PixelCamera {
     const frameId=this.nextFrame(),capturedAt=performance.now(),mediaTime=this.video?.currentTime??0;
     let bitmap:ImageBitmap|null=null;
     try{
-      bitmap=await createImageBitmap(source);
+      if(this.image){
+        // Snapshot the committed paint surface of a streaming multipart MJPEG
+        // <img> synchronously so async createImageBitmap never tears mid-chunk.
+        const surface=this.imageSurface??(this.imageSurface=document.createElement('canvas'));
+        if(surface.width!==width||surface.height!==height){surface.width=width;surface.height=height;}
+        const context=surface.getContext('2d',{alpha:false});
+        if(!context)return;
+        context.drawImage(this.image,0,0,width,height);
+        bitmap=await createImageBitmap(surface);
+      }else{
+        bitmap=await createImageBitmap(source);
+      }
       if(!this.active){bitmap.close();return;}
-      const scale=Math.min(1,640/Math.max(width,height));
+      const trackEdge=getRuntimeProfileHints().maxTrackEdge||640;
+      const scale=Math.min(1,trackEdge/Math.max(width,height));
       const encoded=await this.encoder.encode(bitmap,Math.round(width*scale),Math.round(height*scale));
       encoded.bitmap.close();
       const endpoint=await this.endpoint();
@@ -67,6 +82,7 @@ export class PixelCamera {
       const result=await response.json() as GeometryFrame;
       if(result.frameId!==frameId||!Array.isArray(result.boxes))throw new Error('Sai khung hình bám ảnh.');
       if(!this.active||result.discarded||frameId<=this.presented){bitmap.close();return;}
+      this.failures=0;
       this.presented=frameId;
       const previous=this.latest;
       this.latest={image:bitmap,id:frameId,at:capturedAt};
@@ -75,7 +91,7 @@ export class PixelCamera {
       previous?.image.close();bitmap=null;
     }catch{
       bitmap?.close();
-      if(this.active)this.present(null);
+      if(this.active&&++this.failures>=3)this.present(null);
     }finally{this.inFlight--;}
   }
 
@@ -83,6 +99,7 @@ export class PixelCamera {
     if(!this.active)return;this.active=false;this.controller.abort();this.resolveReady(false);
     if(this.callback)this.video?.cancelVideoFrameCallback(this.callback);
     cancelAnimationFrame(this.raf);this.encoder.dispose();this.latest?.image.close();this.latest=null;
+    if(this.imageSurface){this.imageSurface.width=this.imageSurface.height=0;this.imageSurface=null;}
     this.present(null);
   }
 }

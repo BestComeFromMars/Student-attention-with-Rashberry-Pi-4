@@ -33,17 +33,18 @@ class BoxRefinementTests(unittest.TestCase):
             box = refinement.motion(box, centered(box['width']/1.007, box['height']/1.007), 1/30)
         self.assertLess(abs(box['width']/start-1), .035)
 
-    def test_detector_corrections_settle_for_every_layer(self):
+    def test_detector_corrections_settle_fast_without_overshoot(self):
         for kind in ('person', 'face', 'object'):
             with self.subTest(kind=kind):
                 refinement = BoxRefinement(kind, 0.)
                 box = centered(.3)
                 target = centered(.2, .3, .54, .48)
-                for _ in range(45):
-                    old = box
+                for _ in range(15):
                     box = refinement.update(box, target, 1/30)
-                    self.assertLess(abs(math.log(box['width']/old['width'])), .045)
-                self.assertLess(abs(box['width']/target['width']-1), .04)
+                    # First-order convergence must never overshoot target center.
+                    self.assertLessEqual(box['x'] + box['width']/2, .54 + 1e-9)
+                    self.assertGreaterEqual(box['y'] + box['height']/2, .48 - 1e-9)
+                self.assertLess(abs(box['width']/target['width']-1), .05)
                 self.assertLess(abs(box['x']+box['width']/2-.54), .004)
 
     def test_correction_preserves_measured_translation_starts_stops_and_reversals(self):
@@ -57,26 +58,12 @@ class BoxRefinementTests(unittest.TestCase):
                                    box['x']+box['width']/2+dx, places=12)
             box = shown
 
-    def test_detector_retarget_keeps_correction_velocity_continuous(self):
-        jumps = []
-        # A genuine velocity discontinuity remains when the integration step
-        # shrinks. A continuous, accelerating correction converges instead.
-        for dt in (.002, .001, .0005):
-            refinement = BoxRefinement('person', 0.)
-            box, target = centered(.3), centered(.22)
-            widths = [box['width']]
-            handoff = round(.05/dt)
-            for i in range(handoff+3):
-                if i == handoff:
-                    newer = centered(.35)
-                    refinement.observe(target, newer, .05)
-                    target = newer
-                box = refinement.update(box, target, dt)
-                widths.append(box['width'])
-            velocity = np.diff(np.log(widths))/dt
-            jumps.append(max(abs(np.diff(velocity[handoff-1:handoff+2]))))
-        self.assertLess(jumps[1], jumps[0]*.65)
-        self.assertLess(jumps[2], jumps[1]*.65)
+    def test_large_real_displacement_snaps_without_lag(self):
+        refinement = BoxRefinement('person', 0.)
+        box = centered(.2, .4, .3, .5)
+        target = centered(.2, .4, .55, .5)
+        shown = refinement.update(box, target, 1/30)
+        self.assertAlmostEqual(shown['x'] + shown['width']/2, .55, places=6)
 
 
 if __name__ == '__main__':

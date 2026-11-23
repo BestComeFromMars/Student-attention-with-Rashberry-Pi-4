@@ -61,7 +61,7 @@ class RestBodyTrackingTests(unittest.TestCase):
         person=next(body for body in merged if body['id']==7)
         self.assertIn('bodyPose',person['observation'])
         self.assertEqual(person['observation']['deskRest']['observedAt'],1500)
-        tracking=PersonTracking(async_prepare=False)
+        tracking=PersonTracking()
         try:
             published=tracking.assemble([person],[],1500)[0]
             self.assertEqual(published['faceVisibility'],'unavailable');self.assertNotIn('faceBox',published)

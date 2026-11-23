@@ -2,7 +2,8 @@ import { PI_DEVICE } from './types';
 import type { PersonDetector, StudentTrack, TrackedObject,MemoryStatus } from './types';
 import { FrameEncoder } from './frame-encoder';
 import {PixelCamera} from './pixel-camera';
-import {readDetectionSettings,loadDetectionSettingsSchema,normalizeDetectionSettings,type DetectionSettingsSchema} from './detection-settings';
+import {getRuntimeProfileHints,readDetectionSettings,loadDetectionSettingsSchema,normalizeDetectionSettings,type DetectionSettingsSchema} from './detection-settings';
+import {defaultObservationSettings} from '../../../backend/src/observation-settings.js';
 
 function invalidPayload(): never {
   throw Object.assign(new Error('Dữ liệu nhận diện từ backend không hợp lệ. Thử kết nối lại.'), { status: 502 });
@@ -90,9 +91,9 @@ export async function createDetector(source = ''): Promise<PersonDetector> {
   const createSession = () => {
     const stored=readDetectionSettings(),configuration=JSON.stringify(stored);
     const promise = (async()=>{
-      const settings=stored?normalizeDetectionSettings(await schema(),stored):null;
+      const settings=stored?normalizeDetectionSettings(await schema(),stored):defaultObservationSettings();
       return fetch('/api/sessions', { method: 'POST', signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]),
-        ...(settings?{headers:{'Content-Type':'application/json'},body:JSON.stringify({settings})}:{}) });
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({settings}) });
     })()
       .then(response => readResponse<unknown>(response))
       .then(data => record(data) && typeof data.sessionId === 'string' && data.sessionId ? {id:data.sessionId,configuration} : invalidPayload());
@@ -136,7 +137,7 @@ export async function createDetector(source = ''): Promise<PersonDetector> {
       const height=displayed instanceof HTMLImageElement?displayed.naturalHeight:video?.videoHeight;
       if (source !== PI_DEVICE || displayed) {
         if (!displayed || !width || !height) throw new Error('Camera chưa có khung hình.');
-        const requested=Number(import.meta.env.VITE_CAMERA_WIDTH||1920);
+        const requested=Number(import.meta.env.VITE_CAMERA_WIDTH||getRuntimeProfileHints().maxDetectEdge||1920);
         const configuredEdge=Number.isFinite(requested)?Math.max(1280,Math.min(3840,requested)):1920;
         // A few large faces retain ample detail at 720p. Avoid encoding and
         // decoding a full 1080p frame for every tracking update. Small/crowded
@@ -193,7 +194,7 @@ export async function createDetector(source = ''): Promise<PersonDetector> {
       if(data.memory!==undefined){
         const memory=data.memory;
         if(!record(memory)||!['totalMB','availableMB','limit','detected','processed'].every(key=>Number.isSafeInteger(memory[key])&&Number(memory[key])>=0)||
-          Number(memory.limit)<1||Number(memory.limit)>40||Number(memory.processed)>Number(memory.limit)||
+          Number(memory.limit)<1||Number(memory.limit)>200||Number(memory.processed)>Number(memory.limit)||
           typeof memory.limited!=='boolean'||typeof memory.pressure!=='boolean')invalidPayload();
       }
       currentMemory=data.memory as MemoryStatus|undefined;

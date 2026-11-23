@@ -24,6 +24,9 @@ export class HeadMotion {
       if (at - state.lastAt > HEAD_TURN_GAP_MS) {
         state.zone = null; state.candidate = null;state.changes=[];
       }
+      if (state.changes.length >= this.thresholds.headTurnChanges && at - state.changedAt > 1500) {
+        state.changes = [];
+      }
       state.lastAt = at;
       this.lastPublishedAt=at;this.lastSource=key;
       const turnAngle=this.thresholds.headTurnAngleDeg/90;

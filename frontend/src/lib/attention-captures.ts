@@ -6,20 +6,31 @@ export interface AttentionCapture {
   captureId?:string;revision?:number;
 }
 type Portrait={photo:string;at:number;wallAt:number};
+type CaptureFrame = HTMLCanvasElement | HTMLVideoElement;
 const owner=(track:StudentTrack)=>String(track.personId??track.geometryId??track.id);
 export const CAPTURE_LIMIT=40;
+function latestAttentionLabels(alerts:NonNullable<StudentTrack['alerts']>,action?:StudentTrack['actionAlert']):string[]{
+  let latest:{label:string;observedAt:number}|undefined;
+  for(const alert of alerts){
+    if(!latest||alert.observedAt>latest.observedAt)latest={label:alert.label,observedAt:alert.observedAt};
+  }
+  if(action&&(!latest||action.observedAt>=latest.observedAt))latest={label:action.label,observedAt:action.observedAt};
+  return latest?[latest.label]:[];
+}
 
 /** Crop only a current, independently located face from the paired analyzed image. */
-export function captureFace(frame:HTMLCanvasElement,track:StudentTrack):string|undefined {
+export function captureFace(frame:CaptureFrame,track:StudentTrack):string|undefined {
   if(track.status!=='visible'||track.faceVisibility==='unavailable'||track.trackingState&& !['face','visual'].includes(track.trackingState))return;
+  const width='videoWidth' in frame?frame.videoWidth:frame.width;
+  const height='videoHeight' in frame?frame.videoHeight:frame.height;
   const box:Box|undefined=track.faceBox??(track.boxKind==='face'?track.box:undefined);
-  if(!box||!frame.width||!frame.height||![box.x,box.y,box.width,box.height].every(Number.isFinite)||
+  if(!box||!width||!height||![box.x,box.y,box.width,box.height].every(Number.isFinite)||
     box.x<0||box.y<0||box.width<=0||box.height<=0||box.x+box.width>1.000001||box.y+box.height>1.000001)return;
-  const w=box.width*frame.width,h=box.height*frame.height;
+  const w=box.width*width,h=box.height*height;
   if(Math.min(w,h)<16)return;
-  const side=Math.min(frame.width,frame.height,Math.max(w,h)*1.2);
-  const x=Math.max(0,Math.min(frame.width-side,(box.x+box.width/2)*frame.width-side/2));
-  const y=Math.max(0,Math.min(frame.height-side,(box.y+box.height/2)*frame.height-side/2));
+  const side=Math.min(width,height,Math.max(w,h)*1.2);
+  const x=Math.max(0,Math.min(width-side,(box.x+box.width/2)*width-side/2));
+  const y=Math.max(0,Math.min(height-side,(box.y+box.height/2)*height-side/2));
   try{
     const canvas=document.createElement('canvas');canvas.width=canvas.height=160;
     const context=canvas.getContext('2d');if(!context)return;
@@ -37,16 +48,20 @@ export class AttentionCaptures {
   private records=new Map<string,AttentionCapture>();
   private identities=new Map<string,string>();
   private photoAttempts=new Map<string,number>();
+  private playbackPhotos=new Map<string,{warningAt:number;preferred:boolean}>();
   constructor(private readonly crop=captureFace,private readonly changed?:(capture:AttentionCapture)=>void){}
-  clear(){this.entries.clear();this.faces.clear();this.owners.clear();this.warnings.clear();this.records.clear();this.identities.clear();this.photoAttempts.clear();}
-  clearRecords(){this.entries.clear();this.faces.clear();this.records.clear();}
+  clear(){this.clearRecords();this.owners.clear();this.warnings.clear();this.identities.clear();this.photoAttempts.clear();}
+  clearRecords(){this.entries.clear();this.faces.clear();this.records.clear();this.playbackPhotos.clear();}
   snapshot(){return [...this.entries.values()].sort((a,b)=>b.lastAt-a.lastAt).map(entry=>({...entry,labels:[...entry.labels]}));}
   private identify(track:StudentTrack){
     const identity=owner(track);
     if(this.owners.get(track.id)!==identity){
-      this.entries.delete(track.id);this.faces.delete(track.id);this.photoAttempts.delete(track.id);
-      this.owners.set(track.id,identity);this.identities.set(track.id,crypto.randomUUID());
+      // Keep one stable captureId per student track within a run so ByteTrack
+      // reacquisition never splits one student into duplicate history cards.
+      this.faces.delete(track.id);this.photoAttempts.delete(track.id);
+      this.owners.set(track.id,identity);
     }
+    if(!this.identities.has(track.id))this.identities.set(track.id,crypto.randomUUID());
     return this.identities.get(track.id)!;
   }
   private commit(entry:AttentionCapture,photoChanged=false){
@@ -61,6 +76,12 @@ export class AttentionCaptures {
     if(track.status!=='visible'||track.faceVisibility==='unavailable'||!track.faceBox&&track.boxKind!=='face')return;
     const key=this.identify(track),attempt=this.photoAttempts.get(track.id);
     if(attempt!==undefined&&now-attempt<1000)return;
+    const entry=this.entries.get(track.id)??this.records.get(key);
+    const activeAlert=track.attention==='needs_attention'&&((track.alerts??[]).some(a=>!a.held)||Boolean(track.actionAlert));
+    // Only schedule background portrait crops when an alert or existing record
+    // still lacks a direct during-alert photo; never re-photograph after alert.
+    if(entry?.photo&&!entry.photoBeforeAlert)return;
+    if(!activeAlert&&!entry)return;
     this.photoAttempts.set(track.id,now);return key;
   }
   setPortrait(track:StudentTrack,photo:string,now:number,wallAt:number,captureId:string){
@@ -69,10 +90,32 @@ export class AttentionCaptures {
     this.faces.set(track.id,{photo,at:now,wallAt});
     const metadata=this.records.get(captureId),entry=this.entries.get(track.id)??metadata;
     const current=track.attention==='needs_attention'&&((track.alerts??[]).some(a=>!a.held)||Boolean(track.actionAlert));
-    if(entry&&current&&(entry.photoAt??0)<=wallAt){this.commit({...entry,photo,lastAt:Math.max(entry.lastAt,wallAt),photoAt:wallAt,photoBeforeAlert:false},true);return true;}
-    return false;
+    if(entry&&current&&(!entry.photo||entry.photoBeforeAlert)&&(entry.photoAt??0)<=wallAt){
+      this.commit({...entry,photo,lastAt:Math.max(entry.lastAt,wallAt),photoAt:wallAt,photoBeforeAlert:false},true);return true;
+    }
+    return this.fillPortrait(track,owner(track),photo,wallAt);
   }
-  update(tracks:StudentTrack[],frame:HTMLCanvasElement|null,now:number,wallAt=Date.now()):AttentionCapture[]{
+  fillPortrait(track:StudentTrack,identity:string,photo:string,photoAt:number){
+    if(owner(track)!==identity||this.owners.get(track.id)!==identity)return false;
+    const captureId=this.identities.get(track.id);
+    const entry=this.entries.get(track.id)??(captureId?this.records.get(captureId):undefined);
+    if(!entry||entry.photoAt!==undefined)return false;
+    this.commit({...entry,photo,photoAt,photoBeforeAlert:photoAt<entry.firstAt},true);
+    return true;
+  }
+  setPlaybackPhoto(track:StudentTrack,identity:string,photo:string,photoAt:number,warningAt:number,
+    warningWallAt:number,preferred:boolean){
+    if(owner(track)!==identity||this.owners.get(track.id)!==identity)return false;
+    const captureId=this.identities.get(track.id);
+    if(!captureId)return false;
+    const entry=this.entries.get(track.id)??this.records.get(captureId);
+    const previous=this.playbackPhotos.get(captureId);
+    if(!entry||previous&&(previous.warningAt>warningAt||previous.warningAt===warningAt&&(!preferred||previous.preferred)))return false;
+    this.playbackPhotos.set(captureId,{warningAt,preferred});
+    this.commit({...entry,photo,photoAt,photoBeforeAlert:photoAt<warningWallAt},true);
+    return true;
+  }
+  update(tracks:StudentTrack[],frame:CaptureFrame|null,now:number,wallAt=Date.now()):AttentionCapture[]{
     const visible=new Set<string>();
     for(const track of tracks){
       const captureId=this.identify(track);
@@ -83,8 +126,7 @@ export class AttentionCaptures {
       const alerts=(track.alerts??[]).filter(alert=>!alert.held);
       const action=track.actionAlert;
       const current=track.attention==='needs_attention'&&(alerts.length>0||Boolean(action));
-      const labels=alerts.map(alert=>alert.label);
-      if(action&&!labels.includes(action.label))labels.push(action.label);
+      const labels=latestAttentionLabels(alerts,action);
       const event=current&&!this.warnings.has(captureId);
       if(current)this.warnings.add(captureId);
       else if(!(track.alerts?.some(alert=>alert.held)||action)&&
@@ -105,8 +147,9 @@ export class AttentionCaptures {
           photo:portrait?.photo,photoAt:portrait?.wallAt??entry?.photoAt,photoBeforeAlert:portrait?portrait.at<now:entry?.photoAt!==undefined?true:undefined},Boolean(portrait?.photo&&portrait.photo!==entry?.photo));
       }else if(entry){
         const labelsChanged=labels.join('|')!==entry.labels.join('|');
-        if(fresh||labelsChanged||wallAt-entry.lastAt>=1000){this.commit({...entry,labels,lastAt:wallAt,
-          ...(fresh?{photo:fresh.photo,photoAt:fresh.wallAt,photoBeforeAlert:false}:{})},Boolean(fresh));}
+        const needsPhoto=Boolean(fresh&&(labelsChanged||!entry.photo||entry.photoBeforeAlert));
+        if(needsPhoto||labelsChanged||wallAt-entry.lastAt>=1000){this.commit({...entry,labels,lastAt:wallAt,
+          ...(needsPhoto&&fresh?{photo:fresh.photo,photoAt:fresh.wallAt,photoBeforeAlert:false}:{})},needsPhoto);}
       }
     }
     for(const [id,face]of this.faces)if(!visible.has(id)||now-face.at>2000)this.faces.delete(id);

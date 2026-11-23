@@ -29,6 +29,15 @@ describe('speech evidence freshness and noise controls',()=>{
     expect(face.update(observation(2400,.8,{jawOpen:.8}),2400,true).yawn).toBe(true);
     expect(face.update(observation(3000,.8,{jawOpen:.8}),3000,true).yawn).toBe(true);
   });
+  it('accepts large mouth openings on a clear profile and rejects undersized or blurry profiles',()=>{
+    const face=new FacialBehavior();
+    const profile={valid:false,mouthSource:'profile_roi' as const,facePixels:70};
+    expect(face.update(observation(1000,.8,profile),1000,false,true).yawn).toBe(true);
+    expect(face.update(observation(1300,.55,profile),1300,false,true).yawn).toBe(false);
+    expect(face.update(observation(1600,.8,{...profile,facePixels:45}),1600,false,true).yawn).toBeNull();
+    expect(face.update(observation(1900,.8,{...profile,quality:{usable:false,brightness:12,contrast:2,sharpness:1}}),
+      1900,false,true).yawn).toBeNull();
+  });
   it('still confirms real-sized repeated mouth motion with configured thresholds',()=>{
     expect(articulate(new FacialBehavior(settings())).talking).toMatchObject({state:'confirmed',observedAt:1850});
   });
@@ -98,5 +107,22 @@ describe('speech evidence freshness and noise controls',()=>{
     let result:ReturnType<FacialBehavior['update']>;
     for(let at=1000;at<=8000;at+=200)result=face.update(observation(at,at%400?.16:.04),at,true);
     expect(result!.talking.state).toBe('confirmed');
+  });
+  it('confirms natural speech with default thresholds even at slower frame rates and brief dropouts',()=>{
+    const face=new FacialBehavior(defaultObservationSettings().thresholds);
+    let result:ReturnType<FacialBehavior['update']>;
+    // 500 ms per frame (~2 fps), gentle 16 deg head drift over 500 ms, and one 400 ms dropout.
+    const samples:[number,number|null,number][]=[
+      [1000,.04,0],[1500,.11,8],[2000,.04,16],
+      [2400,null,16], // brief 400 ms landmark dropout
+      [2600,.12,24],[3100,.04,18],[3600,.11,10],[4100,.04,4],
+    ];
+    for(const [at,mouth,yaw] of samples){
+      result=mouth===null
+        ? face.update(undefined,at,false,false)
+        : face.update(observation(at,mouth,{yawDeg:yaw}),at,true);
+    }
+    expect(result!.talking.state).toBe('confirmed');
+    expect(result!.mouthCycles).toBeGreaterThanOrEqual(3);
   });
 });

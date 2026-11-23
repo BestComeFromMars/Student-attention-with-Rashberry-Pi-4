@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {HttpError} from './errors.js';
 import type {Box} from './types.js';
 
-export interface PixelSeed {key:string;box:Box;frameId:number}
+export interface PixelSeed {key:string;box:Box;frameId:number;owner?:number}
 export interface PixelFrame {frameId:number;boxes:{key:string;box:Box}[];processingMs:number}
 
 /** A separate, bounded geometry process; semantic inference never blocks it. */
@@ -37,7 +37,7 @@ export function createPixelTracker(python:string,backend:string,env:NodeJS.Proce
         pending.set(id,{resolve,reject,timer});write({type:'frame',id,session,frameId,capturedAt,image:jpeg.toString('base64')});
       });
     },
-    seed(session:string,seeds:PixelSeed[]){write({type:'seed',session,seeds});},
+    seed(session:string,seeds:PixelSeed[],prune=false){write({type:'seed',session,seeds,prune});},
     release(session:string){write({type:'release',session});},
     async close(){
       if(closed)return;closed=true;fail(new HttpError(503,'Backend đang dừng.'));lines.close();child.stdin.end();

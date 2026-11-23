@@ -90,6 +90,16 @@ describe('nonblocking history outbox',()=>{
     expect(history.getSnapshot().runs).toEqual([]);expect(history.getSnapshot().detail).toBeUndefined();
     expect(methods).not.toContain('PATCH');
   });
+  it('keeps only one latest capture per student trackId within a run',async()=>{
+    const {history}=setup(),run=history.begin('pi','Pi');
+    history.enqueue(run,{...capture(crypto.randomUUID(),1,1),id:'B',displayName:'Học sinh B',labels:['Quay lệch hướng lâu','Cúi đầu'],lastAt:2000});
+    history.enqueue(run,{...capture(crypto.randomUUID(),1,2),id:'B',displayName:'Học sinh B',labels:['Gục người'],lastAt:5000});
+    await history.flush();
+    const detail=history.getSnapshot().detail!;
+    expect(detail.peopleCount).toBe(1);
+    expect(detail.captures).toHaveLength(1);
+    expect(detail.captures[0]).toMatchObject({trackId:'B',labels:['Gục người'],lastAt:5000});
+  });
   it('uses Vietnam midnight for the date and keeps an existing block on its start date',async()=>{
     expect(vietnamDay(Date.parse('2026-11-15T16:59:59Z'))).toBe('2026-11-15');
     expect(vietnamDay(Date.parse('2026-11-15T17:00:00Z'))).toBe('2026-11-16');

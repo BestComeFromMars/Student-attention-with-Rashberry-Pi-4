@@ -1,6 +1,7 @@
-﻿import express from 'express';
+import express from 'express';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { timingSafeEqual } from 'node:crypto';
+import { join } from 'node:path';
 import { Sessions } from './sessions.js';
 import { PiSource } from './pi-source.js';
 import { HttpError } from './errors.js';
@@ -13,13 +14,14 @@ import type {HistoryStore} from './history-store.js';
 
 export interface AppOptions {
   history?:HistoryStore;
+  playbackDirectory?: string;
   engine: InferenceEngine;
   pi?: PiSource;
   sessions?: Sessions;
   piToken?: string;
   piController?: PiController;
 }
-export function createApp({ engine, pi = new PiSource(), sessions = new Sessions(), piToken = '', piController,history }: AppOptions) {
+export function createApp({ engine, pi = new PiSource(), sessions = new Sessions(), piToken = '', piController,history,playbackDirectory }: AppOptions) {
   const app = express();
   app.disable('x-powered-by');
   app.use((_request, response, next) => {
@@ -35,6 +37,27 @@ export function createApp({ engine, pi = new PiSource(), sessions = new Sessions
       ...(engine.metrics ? { metrics: engine.metrics } : {}) });
   });
   app.use('/api/history',historyApi(history));
+  if (playbackDirectory) {
+    app.get('/api/playback/:file', (request, response, next) => {
+      if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress ?? ''))
+        throw new HttpError(403, 'Video chỉ được truy cập từ ứng dụng trên máy này.');
+      const file = request.params.file;
+      if (file !== 'timeline.json' && !/^[0-9a-f]{16}\.mp4$/.test(file)) throw new HttpError(404, 'Không tìm thấy video.');
+      response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      response.sendFile(join(playbackDirectory, file), error => {
+        if (!error || response.destroyed) return;
+        const failure = error as NodeJS.ErrnoException & { status?: number };
+        if (failure.code === 'ECONNABORTED' || failure.syscall === 'write') return;
+        if (response.headersSent) {
+          response.destroy(error);
+          return;
+        }
+        const status = failure.status ?? 500;
+        if (status === 404) return next(new HttpError(status, 'Chưa có video phát lại.'));
+        next(new HttpError(status, 'Không đọc được video phát lại.'));
+      });
+    });
+  }
   app.get('/api/observation-settings',(_request,response)=>response.json(observationSettingsSchema()));
   app.post('/api/sessions',express.json({limit:'16kb'}), (request, response) => {
     if (!engine.ready) throw new HttpError(503, 'AI backend chưa sẵn sàng.');
@@ -44,7 +67,7 @@ export function createApp({ engine, pi = new PiSource(), sessions = new Sessions
   });
   app.get('/api/sessions/:id/settings',(request,response)=>response.json({settings:sessions.settings(String(request.params.id))}));
   app.put('/api/sessions/:id/settings',express.json({limit:'16kb'}),(request,response)=>{
-    response.json({settings:sessions.configure(String(request.params.id),request.body)});
+    response.json({settings:sessions.configure(String(request.params.id),request.body,engine)});
   });
   app.delete('/api/sessions/:id', (request, response) => {
     sessions.delete(String(request.params.id),engine);

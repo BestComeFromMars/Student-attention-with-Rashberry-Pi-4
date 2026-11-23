@@ -4,6 +4,7 @@ Production weights: buffalo_l/det_10g.onnx, non-commercial research license.
 RGB normalization and stride/anchor layout follow the upstream SCRFD model
 specification. This adapter returns the existing detector's 15-column layout.
 """
+import os
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -34,7 +35,10 @@ class SCRFD:
         # session/shape beside the already loaded behavior models.
         options.enable_cpu_mem_arena = False
         options.enable_mem_pattern = False
-        options.intra_op_num_threads = 1
+        cpu_count = os.cpu_count() or 2
+        default_threads = 2 if cpu_count >= 4 else 1
+        threads = max(1, min(4, int(os.environ.get('AI_ORT_THREADS', str(default_threads)))))
+        options.intra_op_num_threads = threads
         options.inter_op_num_threads = 1
         options.add_session_config_entry('session.intra_op.allow_spinning', '0')
         options.add_session_config_entry('session.inter_op.allow_spinning', '0')
@@ -71,7 +75,8 @@ class VerifiedFaceDetector:
         self.yunet = cv2.FaceDetectorYN.create(str(Path(model_path).with_name('face_detection_yunet_2023mar.onnx')),
                                              '', (320, 320), .65, .3, 5000)
         self.scrfd = SCRFD(model_path)
-        self.strong_model = Path(model_path).name=='scrfd_10g.onnx'
+        self.model_name = Path(model_path).stem.upper().replace('_', '-')
+        self.strong_model = Path(model_path).name in ('scrfd_10g.onnx', 'scrfd_2.5g.onnx')
         self.evidence = []
 
     def setInputSize(self, size):
@@ -106,12 +111,15 @@ class VerifiedFaceDetector:
                     self.evidence.append(dict(evidence,enhanced=True))
             rows = np.asarray(merged,dtype=np.float32).reshape(-1,15)
         if getattr(self,'strong_model',False):
+            model_label = getattr(self, 'model_name', 'SCRFD-10G')
+            verify_thresh = .62 if '2.5G' in model_label else .75
             for row,evidence in zip(rows,self.evidence):
-                evidence['detectorModel']='SCRFD-10G'
+                evidence['detectorModel']=model_label
                 # Trust the pretrained detector for profile presence; frontal
                 # landmark ordering belongs to behavior measurement, not here.
-                if evidence.get('scrfdScore',0)>=.75 and np.isfinite(row).all():
-                    evidence['detectorVerified']=True
+                if evidence.get('scrfdScore',0)>=verify_thresh and np.isfinite(row).all():
+                    if '2.5G' not in model_label or evidence.get('scrfdScore',0)>=.72 or plausible_points(row):
+                        evidence['detectorVerified']=True
         return None, rows if len(rows) else None
 
 

@@ -3,11 +3,11 @@ import { StudentTracker } from './tracker.js';
 import { HttpError } from './errors.js';
 import { AttentionEvaluator } from './attention.js';
 import type { InferenceEngine, TrackedObject,MemoryStatus } from './types.js';
-import {defaultObservationSettings,parseObservationSettings,type ObservationSettings} from './observation-settings.js';
+import {activeFeaturesForSettings,defaultObservationSettings,parseObservationSettings,type ObservationSettings} from './observation-settings.js';
 import {BoxPresentation} from './box-presentation.js';
 
 interface Session { tracker: StudentTracker; attention: AttentionEvaluator; objects: TrackedObject[]; lastUsed: number; busy: boolean;
-  source?:'upload'|'pi';engineId:string;settings:ObservationSettings;presentation:BoxPresentation;memory?:MemoryStatus; }
+  source?:'upload'|'pi';engineId:string;settings:ObservationSettings;syncedConfig?:string;presentation:BoxPresentation;memory?:MemoryStatus; }
 export class Sessions {
   private sessions = new Map<string, Session>();
   constructor(private readonly now:()=>number=()=>Date.now()) {}
@@ -34,12 +34,21 @@ export class Sessions {
     if(!session)throw new HttpError(404,'Phiên đã kết thúc. Bắt đầu lại nhận diện.');
     return parseObservationSettings(session.settings);
   }
-  configure(id:string,configuration:unknown){
+  private syncEngine(session:Session,engine?:InferenceEngine){
+    if(!engine?.configure)return;
+    const features=activeFeaturesForSettings(session.settings),key=JSON.stringify(features);
+    if(session.syncedConfig===key)return;
+    session.syncedConfig=key;
+    engine.configure(session.engineId,features);
+  }
+  configure(id:string,configuration:unknown,engine?:InferenceEngine){
     const settings=parseObservationSettings(configuration),session=this.sessions.get(id);
     if(!session)throw new HttpError(404,'Phiên đã kết thúc. Bắt đầu lại nhận diện.');
     if(session.busy)throw new HttpError(409,'Đợi khung hình hiện tại hoàn tất rồi đổi ngưỡng.');
     if(JSON.stringify(settings)!==JSON.stringify(session.settings)){
       session.settings=settings;session.attention=new AttentionEvaluator(settings);session.tracker.retainAlerts([]);
+      if(!settings.objectsEnabled)session.objects=[];
+      this.syncEngine(session,engine);
     }
     session.lastUsed=this.now();return this.settings(id);
   }
@@ -55,10 +64,11 @@ export class Sessions {
     if (!session) throw new HttpError(404, 'Phiên đã kết thúc. Bắt đầu lại nhận diện.');
     if (session.busy) throw new HttpError(409, 'Phiên đang xử lý một khung hình khác.');
     if(session.source&&session.source!==source){
-      engine.release?.(session.engineId);session.engineId=randomUUID();
+      engine.release?.(session.engineId);session.engineId=randomUUID();session.syncedConfig=undefined;
       session.tracker=new StudentTracker();session.attention=new AttentionEvaluator(session.settings);session.objects=[];
       session.presentation=new BoxPresentation();
     }
+    this.syncEngine(session,engine);
     session.source=source;
     session.busy = true;
     session.lastUsed = this.now();
@@ -69,7 +79,7 @@ export class Sessions {
       session.lastUsed = this.now();
       session.memory=result.memory;
       const tracks = session.attention.evaluate(session.tracker.update(result.people, session.lastUsed), session.lastUsed);
-      const objects = result.objects ?? tracks.flatMap(track=>(track.objects??[]).map((object,index)=>({...object,
+      const objects = !session.settings.objectsEnabled ? [] : result.objects ?? tracks.flatMap(track=>(track.objects??[]).map((object,index)=>({...object,
         id:`${track.id}-${object.kind}-${index}`,trackedAt:object.observedAt,trackingState:'detected' as const,ownerGeometryId:track.geometryId,ownerPersonId:track.personId,ownerId:track.id})));
       session.objects=objects.filter(object=>Number.isFinite(object.trackedAt)&&
         (result.frameAt!==undefined?object.trackedAt===result.frameAt:
@@ -80,8 +90,8 @@ export class Sessions {
       if(frameId!==undefined){
         const seeds:import('./pixel-tracker.js').PixelSeed[]=[];
         for(const track of tracks.filter(t=>t.status==='visible')){
-          if(track.personBox&&track.geometryFrameIds?.person!==undefined)seeds.push({key:'person:'+track.id,box:track.personBox,frameId:track.geometryFrameIds.person});
-          if(track.faceBox&&track.faceVisibility!=='unavailable'&&track.geometryFrameIds?.face!==undefined)seeds.push({key:'face:'+track.id,box:track.faceBox,frameId:track.geometryFrameIds.face});
+          if(track.personBox&&track.geometryFrameIds?.person!==undefined)seeds.push({key:'person:'+track.id,box:track.personBox,frameId:track.geometryFrameIds.person,owner:track.personId});
+          if(track.faceBox&&track.faceVisibility!=='unavailable'&&track.geometryFrameIds?.face!==undefined)seeds.push({key:'face:'+track.id,box:track.faceBox,frameId:track.geometryFrameIds.face,owner:track.personId});
         }
         for(const object of session.objects)seeds.push({key:'object:'+object.id,box:object.box,frameId});
         engine.seedGeometry?.(session.engineId,seeds);

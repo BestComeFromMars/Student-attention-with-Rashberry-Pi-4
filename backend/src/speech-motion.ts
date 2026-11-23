@@ -6,6 +6,7 @@ interface Evidence { count: number; durationMs: number; observedAt?:number; acti
 /** Local rises and falls, independent of a fixed mouth-open threshold. */
 class ChannelCycles {
   private at: number | null = null;
+  private lastStepMs = 0;
   private low: number | null = null;
   private peak: { at: number; value: number; rest: number } | null = null;
   private cycles: {start:number;end:number}[] = [];
@@ -15,6 +16,7 @@ class ChannelCycles {
 
   clear() {
     this.at = this.low = null;
+    this.lastStepMs = 0;
     this.peak = null;
     this.cycles = [];
     this.motionAt = this.motionValue = null;
@@ -22,10 +24,11 @@ class ChannelCycles {
 
   update(value: number | null | undefined, at: number) {
     if (!usable(value)) { this.clear(); return; }
-    if (this.at !== null && (at < this.at || at-this.at > 750)) this.clear();
+    if (this.at !== null && (at < this.at || at-this.at > 1500)) this.clear();
     if (at === this.at) return;
     // Silence expires the current utterance, even while fresh images continue.
-    if (this.motionAt !== null && at-this.motionAt > 1000) this.clear();
+    if (this.motionAt !== null && at-this.motionAt > 1600) this.clear();
+    if (this.at !== null) this.lastStepMs = at - this.at;
     this.at = at;
     this.cycles = this.cycles.filter(cycle => at-cycle.start <= this.windowMs);
     this.motionValue ??= value;
@@ -40,11 +43,11 @@ class ChannelCycles {
         this.low = value;
       } else {
         this.peak.value = Math.max(this.peak.value, value);
-        const drop = Math.max(this.excursion, (this.peak.value-this.peak.rest)/2);
+        const drop = Math.max(this.excursion * .85, (this.peak.value-this.peak.rest) * .42);
         if (this.peak.value-value >= drop-1e-8) {
           // Distinct fresh measurements must support the opening over time;
           // very short spikes and a held-open mouth are not repeated articulation.
-          if (at-this.peak.at >= 60) {
+          if (at-this.peak.at >= 45) {
             this.cycles.push({start:this.peak.at,end:at});
           }
           this.peak = null;
@@ -60,8 +63,9 @@ class ChannelCycles {
 
   get evidence(): Evidence {
     const first=this.cycles[0],last=this.cycles.at(-1);
+    const activeWindow=this.lastStepMs>450?Math.min(950,Math.round(this.lastStepMs*1.15)):450;
     return {count:this.cycles.length,durationMs:first&&last?last.end-first.start:0,observedAt:last?.end,
-      active:last!==undefined&&this.at!==null&&this.at-last.end<=450};
+      active:last!==undefined&&this.at!==null&&(this.at-last.end<=activeWindow||(this.peak!==null&&this.at-last.end<=1400))};
   }
   get pending() { return this.peak !== null; }
 }
@@ -69,8 +73,8 @@ class ChannelCycles {
 /** The two channels are alternatives; their cycles are never added together. */
 export class SpeechMotion {
   constructor(private readonly thresholds:ObservationSettings['thresholds']=defaultObservationSettings().thresholds){
-    const window=Math.max(5000,thresholds.talkingMs+2000);
-    this.mouth=new ChannelCycles(.06,window);this.jaw=new ChannelCycles(.10,window);
+    const window=Math.max(5000,thresholds.talkingMs+3500);
+    this.mouth=new ChannelCycles(.042,window);this.jaw=new ChannelCycles(.072,window);
   }
   private mouth:ChannelCycles;
   private jaw:ChannelCycles;

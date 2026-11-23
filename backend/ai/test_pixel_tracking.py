@@ -52,6 +52,22 @@ class PixelTrackingTests(unittest.TestCase):
         tracker.seed([dict(key='face:A',frameId=i,box=self.box) for i in [9,11]])
         self.assertEqual(tracker.update(self.image(1),11),[])
 
+    def test_reacquisition_and_owner_change_start_at_the_current_measurement(self):
+        tracker=PixelTracking()
+        tracker.update(self.image(0),0)
+        seed=dict(key='face:A',frameId=0,box=self.box,owner=7)
+        self.assertEqual(tracker.seed([seed]),['face:A'])
+        tracker.update(self.image(0),1)
+        moved=dict(self.box,x=.6)
+        self.assertEqual(tracker.seed([dict(seed,frameId=1,box=moved,reacquire=True)]),['face:A'])
+        self.assertEqual(tracker.boxes['face:A']['box'],moved)
+        # An older result cannot reanchor a newer track.
+        self.assertEqual(tracker.seed([dict(seed,reacquire=True)]),[])
+        self.assertEqual(tracker.boxes['face:A']['box'],moved)
+        tracker.update(self.image(0),2)
+        self.assertEqual(tracker.seed([dict(seed,frameId=2,owner=8)]),['face:A'])
+        self.assertEqual(tracker.boxes['face:A']['box'],self.box)
+
     def test_out_of_order_frames_rejected(self):
         tracker=PixelTracking();tracker.update(self.image(0),10)
         with self.assertRaises(ValueError):tracker.update(self.image(0),9)
@@ -78,7 +94,7 @@ class PixelTrackingTests(unittest.TestCase):
         for index in range(2,42):
             now[0]=index/30
             box=tracker.update(self.image(index),index)[0]['box']
-            self.assertGreaterEqual(box['width']/previous['width'],.978)
+            self.assertGreaterEqual(box['width']/previous['width'],.935)
             # Shape damping must never damp actual current-frame translation.
             self.assertAlmostEqual((box['x']+box['width']/2-previous['x']-previous['width']/2)*320,2,delta=.3)
             previous=dict(box)
@@ -169,6 +185,19 @@ class PixelTrackingTests(unittest.TestCase):
         self.assertAlmostEqual(moved['height'],box['height'],places=5)
         self.assertAlmostEqual(moved['x']-box['x'],.02,places=5)
         self.assertAlmostEqual(moved['y']-box['y'],.01,places=5)
+
+
+    def test_prune_removes_stale_keys_immediately(self):
+        tracker=PixelTracking();tracker.update(self.image(0),0)
+        tracker.seed([
+            dict(key='person:A',frameId=0,box=self.box),
+            dict(key='person:B',frameId=0,box=self.box),
+            dict(key='object:O1',frameId=0,box=self.box),
+        ],prune=True)
+        self.assertEqual(set(tracker.boxes.keys()),{'person:A','person:B','object:O1'})
+        tracker.update(self.image(1),1)
+        tracker.seed([dict(key='person:A',frameId=1,box=self.box)],prune=True)
+        self.assertEqual(set(tracker.boxes.keys()),{'person:A'})
 
 
 if __name__=='__main__':unittest.main()

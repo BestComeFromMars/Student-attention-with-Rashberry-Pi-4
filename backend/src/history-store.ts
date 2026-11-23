@@ -20,14 +20,27 @@ export interface HistoryCapture {
 }
 export interface HistoryRun {
   id:string;date:string;number:number;startedAt:number;endedAt?:number;
-  source:'pi'|'webcam';cameraLabel:string;captures:HistoryCapture[];
+  source:'pi'|'webcam'|'video';cameraLabel:string;captures:HistoryCapture[];
 }
 interface Day {version:1;date:string;nextRunNumber:number;runs:HistoryRun[];deletedRunIds:string[]}
 export interface CaptureUpdate extends HistoryCapture {photo?:string}
 const summary=(run:HistoryRun)=>({id:run.id,date:run.date,number:run.number,startedAt:run.startedAt,endedAt:run.endedAt,
   source:run.source,cameraLabel:run.cameraLabel,peopleCount:run.captures.length,eventCount:run.captures.reduce((n,c)=>n+c.count,0)});
-const publicCapture=(run:HistoryRun,capture:HistoryCapture)=>({...capture,
+const publicCapture=(run:HistoryRun,capture:HistoryCapture)=>({...capture,labels:capture.labels.slice(0,1),
   ...(capture.photoRevision?{photoUrl:`/api/history/runs/${run.id}/captures/${capture.captureId}/photo?v=${capture.photoRevision}`}:{})});
+function dedupeCaptures(captures:HistoryCapture[]):HistoryCapture[]{
+  const byTrack=new Map<string,HistoryCapture>();
+  for(const item of captures){
+    const normalized:HistoryCapture={...item,labels:item.labels.slice(0,1)};
+    const existing=byTrack.get(item.trackId);
+    if(!existing){byTrack.set(item.trackId,normalized);continue;}
+    const newer=normalized.lastAt>existing.lastAt||(normalized.lastAt===existing.lastAt&&normalized.revision>=existing.revision);
+    const latest=newer?normalized:existing;
+    byTrack.set(item.trackId,{...latest,firstAt:Math.min(existing.firstAt,normalized.firstAt),
+      count:existing.captureId===normalized.captureId?Math.max(existing.count,normalized.count):existing.count+normalized.count});
+  }
+  return [...byTrack.values()];
+}
 
 /** A single writer makes JSON replacement and deletion ordered, including retries. */
 export class HistoryStore {
@@ -48,8 +61,9 @@ export class HistoryStore {
       if(day.version!==1||day.date!==entry.name||!Array.isArray(day.runs)||!Number.isSafeInteger(day.nextRunNumber))
         throw new Error('Không đọc được lịch sử ngày '+entry.name);
       day.deletedRunIds??=[];
+      if(!day.runs.length)day.nextRunNumber=1;
       this.days.set(day.date,day);
-      for(const run of day.runs){id(run.id);if(run.date!==day.date)throw new Error('Ngày lịch sử không hợp lệ.');this.runDays.set(run.id,day.date);}
+      for(const run of day.runs){id(run.id);if(run.date!==day.date)throw new Error('Ngày lịch sử không hợp lệ.');run.captures=dedupeCaptures(run.captures??[]);this.runDays.set(run.id,day.date);}
       for(const removed of day.deletedRunIds)this.deleted.add(id(removed));
     }
   })().catch(error=>{this.initialization=undefined;this.days.clear();this.runDays.clear();this.deleted.clear();throw error;});}
@@ -80,10 +94,10 @@ export class HistoryStore {
     if(this.deleted.has(runId))throw new HttpError(410,'Lần nhận diện này đã bị xóa.');
     if(this.runDays.has(runId))return summary(this.find(runId).run);
     const startedAt=timestamp(value.startedAt??this.now()),dayKey=historyDay(startedAt);
-    if(value.source!=='pi'&&value.source!=='webcam')fail();
+    if(value.source!=='pi'&&value.source!=='webcam'&&value.source!=='video')fail();
     const day=structuredClone(this.days.get(dayKey)??{version:1,date:dayKey,nextRunNumber:1,runs:[],deletedRunIds:[]}) as Day;
     const run:HistoryRun={id:runId,date:dayKey,number:day.nextRunNumber++,startedAt,
-      source:value.source as 'pi'|'webcam',cameraLabel:text(value.cameraLabel||'Camera',160),captures:[]};
+      source:value.source,cameraLabel:text(value.cameraLabel||'Camera',160),captures:[]};
     day.runs.push(run);await this.commit(day);this.runDays.set(runId,dayKey);return summary(run);
   });}
   end(runId:string,input:unknown){return this.write(async()=>{
@@ -95,18 +109,24 @@ export class HistoryStore {
     const {day,run}=this.find(runId),values=(input as {captures?:unknown[]})?.captures;
     if(!Array.isArray(values)||values.length>40)fail();
     const next=structuredClone(day),target=next.runs.find(r=>r.id===run.id)!;
-    const updates:{capture:HistoryCapture;photo?:Buffer}[]=[];
+    const updates:{capture:HistoryCapture;photo?:Buffer;replacedPhotoId?:string}[]=[];
     for(const raw of values){
       const value=raw as Record<string,unknown>;if(!value||typeof value!=='object')fail();
       const captureId=id(value.captureId),revision=integer(value.revision);
-      const previous=target.captures.find(c=>c.captureId===captureId);
-      if(previous&&revision<=previous.revision)continue;
+      const trackId=text(value.trackId,60);
+      const previous=target.captures.find(c=>c.captureId===captureId||c.trackId===trackId);
+      const sameCapture=Boolean(previous&&previous.captureId===captureId);
+      if(sameCapture&&revision<=previous!.revision)continue;
       const count=integer(value.count),firstAt=timestamp(value.firstAt),lastAt=timestamp(value.lastAt);
-      if(firstAt>lastAt||previous&&count<previous.count)fail();
+      if(firstAt>lastAt||sameCapture&&count<previous!.count)fail();
       if(!Array.isArray(value.labels)||value.labels.length>20)fail();
-      const capture:HistoryCapture={captureId,trackId:text(value.trackId,60),displayName:text(value.displayName,60),
-        labels:value.labels.map(label=>text(label)),count,firstAt:previous?.firstAt??firstAt,lastAt:Math.max(previous?.lastAt??0,lastAt),revision,
-        photoAt:previous?.photoAt,photoBeforeAlert:previous?.photoRevision&&typeof value.photoBeforeAlert==='boolean'?value.photoBeforeAlert:previous?.photoBeforeAlert,photoRevision:previous?.photoRevision};
+      const labels=value.labels.map(label=>text(label)).slice(0,1);
+      const capture:HistoryCapture={captureId,trackId,displayName:text(value.displayName,60),
+        labels,count:sameCapture?count:Math.max(previous?.count??0,count),
+        firstAt:previous?Math.min(previous.firstAt,firstAt):firstAt,lastAt:Math.max(previous?.lastAt??0,lastAt),revision,
+        photoAt:sameCapture?previous?.photoAt:undefined,
+        photoBeforeAlert:sameCapture&&previous?.photoRevision&&typeof value.photoBeforeAlert==='boolean'?value.photoBeforeAlert:sameCapture?previous?.photoBeforeAlert:undefined,
+        photoRevision:sameCapture?previous?.photoRevision:undefined};
       let photo:Buffer|undefined;
       if(value.photo!==undefined){
         if(typeof value.photo!=='string'||value.photo.length>180000||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(value.photo))fail('Ảnh lịch sử phải là JPEG hợp lệ.');
@@ -115,12 +135,15 @@ export class HistoryStore {
         catch{fail('Không đọc được ảnh mặt trong lịch sử.');}
         capture.photoAt=timestamp(value.photoAt??lastAt);capture.photoBeforeAlert=value.photoBeforeAlert===true;capture.photoRevision=revision;
       }
-      updates.push({capture,photo});
+      const replacedPhotoId=previous&&!sameCapture&&previous.photoRevision?previous.captureId:undefined;
+      updates.push({capture,photo,replacedPhotoId});
       if(previous)target.captures.splice(target.captures.indexOf(previous),1,capture);else target.captures.push(capture);
     }
-    for(const {capture,photo}of updates){
+    for(const {capture,photo,replacedPhotoId}of updates){
+      const folder=join(this.root,day.date,run.id);
+      if(replacedPhotoId)await rm(join(folder,replacedPhotoId+'.jpg'),{force:true});
       if(!photo)continue;
-      const folder=join(this.root,day.date,run.id);await mkdir(folder,{recursive:true});
+      await mkdir(folder,{recursive:true});
       const temporary=join(folder,`${capture.captureId}.${randomUUID()}.tmp`);
       try{await writeFile(temporary,photo);await rename(temporary,join(folder,capture.captureId+'.jpg'));}
       finally{await rm(temporary,{force:true});}
@@ -137,12 +160,14 @@ export class HistoryStore {
   removeRun(runId:string){return this.write(async()=>{
     const {day,run}=this.find(runId),next=structuredClone(day);
     next.runs=next.runs.filter(r=>r.id!==run.id);next.deletedRunIds.push(run.id);
+    if(!next.runs.length)next.nextRunNumber=1;
     await this.commit(next);this.runDays.delete(run.id);this.deleted.add(run.id);
     await rm(join(this.root,day.date,run.id),{recursive:true,force:true});
   });}
   removeDay(dayKey:string){return this.write(async()=>{
     const key=date(dayKey),day=this.days.get(key);if(!day)return;
     const next=structuredClone(day);next.deletedRunIds.push(...day.runs.map(r=>r.id));next.runs=[];
+    next.nextRunNumber=1;
     await this.commit(next);
     for(const run of day.runs){this.runDays.delete(run.id);this.deleted.add(run.id);await rm(join(this.root,key,run.id),{recursive:true,force:true});}
   });}
