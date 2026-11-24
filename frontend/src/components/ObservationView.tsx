@@ -16,6 +16,8 @@ export default function ObservationView({state,session}:{state:SessionSnapshot;s
   const tracks=state.playback?state.tracks:live.tracks;
   const stage=useElementSize<HTMLDivElement>(),camera=useCameraExpansion();
   const cameraOn=state.camera==='on',aspect=state.resolution?state.resolution.width/state.resolution.height:16/9;
+  const viewportWidth=stage.width>0&&stage.height>0?Math.floor(Math.min(stage.width,stage.height*aspect)):0;
+  const viewportHeight=viewportWidth>0?Math.floor(viewportWidth/aspect):0;
   return <div className="observation-layout">
     <section className="camera-panel" aria-label="Camera lớp học" data-expanded={camera.expanded}>
       <div className="camera-heading"><div className="camera-title-row"><h1><Camera size={19}/>Camera lớp học</h1>
@@ -29,7 +31,7 @@ export default function ObservationView({state,session}:{state:SessionSnapshot;s
             aria-pressed={camera.expanded} onClick={camera.toggle}>{camera.expanded?<Minimize2 size={17}/>:<Maximize2 size={17}/>}<span>{camera.expanded?'Thu nhỏ':'Phóng to'}</span></button>
         </div></div></div>
       {cameraOn&&state.detection==='running'&&state.memory?.limited&&<div className="memory-notice" role="status"><strong>Không đủ RAM để nhận diện.</strong> Vẫn tiếp tục xử lý tối đa {state.memory.limit} người; tự tăng lại khi đủ RAM.</div>}
-      <div className="camera-stage" ref={stage.ref}><div className="video-viewport" style={{aspectRatio:aspect,width:Math.min(stage.width,stage.height*aspect)}}>
+      <div className="camera-stage" ref={stage.ref} data-active={cameraOn}><div className="video-viewport" style={viewportWidth>0?{width:viewportWidth,height:viewportHeight}:{aspectRatio:aspect,width:'100%'}}>
         <CameraPreview session={session} on={cameraOn} pi={piSource} version={state.piStreamVersion} playback={state.playback}/>
         {cameraOn&&state.playbackOverlay&&state.resolution&&<PlaybackOverlay session={session}
           width={state.resolution.width} height={state.resolution.height}/>}

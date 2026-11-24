@@ -373,7 +373,7 @@ export class ObservationSession {
       this.publish({
         camera: 'on', cameraLabel: track.label || 'Webcam',
         selectedDevice: settings.deviceId || this.state.selectedDevice,
-        resolution: { width: settings.width || 1280, height: settings.height || 720 },
+        resolution: { width: this.video?.videoWidth || settings.width || 1280, height: this.video?.videoHeight || settings.height || 720 },
         startedAt: Date.now(),
       });
     } catch (error) {

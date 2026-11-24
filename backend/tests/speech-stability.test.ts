@@ -5,7 +5,7 @@ import {SpeechMotion} from '../src/speech-motion.js';
 import {defaultObservationSettings} from '../src/observation-settings.js';
 import type {FaceObservation,StudentTrack} from '../src/types.js';
 
-const settings=()=>({...defaultObservationSettings().thresholds,talkingMs:500,talkingCycles:3});
+const settings=()=>({...defaultObservationSettings().thresholds,talkingMs:500});
 function observation(at:number,mouth:number,extra:Partial<FaceObservation>={}):FaceObservation{
   return {valid:true,mouthValid:true,facePixels:120,mouthSource:'face_landmarker',eyeAspectRatio:.3,yawOffset:0,yawDeg:0,pitchDeg:0,
     mouthOpenRatio:mouth,observedAt:at,...extra};
@@ -63,13 +63,13 @@ describe('speech evidence freshness and noise controls',()=>{
     }
     expect(result!.alerts!.some(a=>a.type==='talking')).toBe(false);
   });
-  it('does not combine a remote first cycle with unrelated recent cycles',()=>{
+  it('resets after a silence gap so an old mouth movement cannot combine with a new one',()=>{
     const motion=new SpeechMotion(settings());
     motion.update(.04,null,0);motion.update(.16,null,100);motion.update(.04,null,300);
-    // Keep weak activity fresh; the first completed cycle must still age out.
-    for(let at=500;at<=5000;at+=500)motion.update(at%1000?.11:.04,null,at);
-    motion.update(.16,null,5200);motion.update(.04,null,5400);
-    expect(motion.evidence.durationMs).toBeLessThanOrEqual(4900);
+    // Keep mouth still for > 1600 ms so the previous utterance expires.
+    for(let at=600;at<=2200;at+=400)motion.update(.04,null,at);
+    motion.update(.16,null,2500);motion.update(.04,null,2700);
+    expect(motion.evidence.durationMs).toBeLessThanOrEqual(300);
   });
   it.each([
     {quality:{usable:false,brightness:10,contrast:2,sharpness:1}},
@@ -99,7 +99,10 @@ describe('speech evidence freshness and noise controls',()=>{
   it('does not accumulate from repeated timestamps or mix landmark sources',()=>{
     const face=new FacialBehavior(settings());
     face.update(observation(1000,.04),1000,true);face.update(observation(1100,.16),1100,true);
-    for(let n=0;n<10;n++)expect(face.update(observation(1100,n%2?.04:.16),1100,true).mouthCycles).toBe(0);
+    for(let n=0;n<10;n++){
+      const result=face.update(observation(1100,n%2?.04:.16),1100,true);
+      expect(result.mouthCycles).toBe(1);expect(result.talking.durationMs).toBe(0);
+    }
     expect(face.update(observation(1250,.04,{mouthSource:'profile_roi'}),1250,true).mouthCycles).toBe(0);
   });
   it('supports a configured speech duration longer than the default evidence window',()=>{

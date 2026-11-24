@@ -129,7 +129,7 @@ export class AttentionEvaluator {
       const useFaceHeading = faceHeading && (!bodyHeading || bodyAt-faceAt<750);
       const headAt = useFaceHeading ? faceAt : bodyHeading ? bodyAt : now;
       const yaw=useFaceHeading?observation!.yawDeg!:bodyHeading?bodyYawDegrees(observation!.headYaw!):null;
-      const headSource=useFaceHeading?observation?.mouthSource==='profile_roi'?'face_anchors':'face_pose':'body_keypoints';
+      const headSource=useFaceHeading?'face_pose':'body_keypoints';
       signals.push(history.head.update(track.status !== 'visible'||yaw===null ? null : Math.max(-1,Math.min(1,(yaw-configuredCameraYaw())/90)), headAt, now,
         yaw===null?undefined:headSource));
       const posture=history.posture.update({

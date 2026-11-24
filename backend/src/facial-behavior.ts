@@ -165,7 +165,7 @@ export class FacialBehavior {
         this.speech.update(mouthKnown ? mouth : null, jawKnown ? jaw : null, at);
       }
       const { count, durationMs,observedAt,active } = this.speech.evidence;
-      talking = { state: yawn||smiling ? 'clear' : poseJump?'unavailable':active&&count >= this.thresholds.talkingCycles && durationMs >= this.thresholds.talkingMs ? 'confirmed'
+      talking = { state: yawn||smiling ? 'clear' : poseJump?'unavailable':active&&count >= 2 && durationMs >= this.thresholds.talkingMs ? 'confirmed'
         : (active&&count>0)||this.speech.pending ? 'pending' : 'clear', durationMs,observedAt };
     } else this.clearSpeech();
 

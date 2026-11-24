@@ -27,12 +27,22 @@ export class HeadMotion {
       if (state.changes.length >= this.thresholds.headTurnChanges && at - state.changedAt > 1500) {
         state.changes = [];
       }
+      const turnAngle=this.thresholds.headTurnAngleDeg/90;
+      const holdAngle=turnAngle*.85;
+      const prevAt=state.lastAt;
       state.lastAt = at;
       this.lastPublishedAt=at;this.lastSource=key;
-      const turnAngle=this.thresholds.headTurnAngleDeg/90;
-      const zone = yaw! <= -turnAngle ? -1 : yaw! >= turnAngle ? 1 : Math.abs(yaw!) <= .12 ? 0 : null;
+      const rawZone = yaw! <= -turnAngle ? -1 : yaw! >= turnAngle ? 1 : Math.abs(yaw!) <= .18 ? 0 : null;
+      const zone = rawZone !== null ? rawZone
+        : state.candidate?.zone === -1 && yaw! <= -holdAngle ? -1
+        : state.candidate?.zone === 1 && yaw! >= holdAngle ? 1
+        : null;
       if (zone === null || zone === state.zone) state.candidate = null;
-      else if (state.candidate?.zone !== zone) state.candidate = { zone, since: at };
+      else if (state.zone !== null && state.zone * zone === -1 && prevAt > -Infinity && at - prevAt >= 180 && at - state.changedAt >= 250) {
+        // Direct full opposite-side turn (-1 <-> +1) over a real frame interval.
+        state.changes.push(at); state.changedAt = at;
+        state.zone = zone; state.candidate = null;
+      } else if (state.candidate?.zone !== zone) state.candidate = { zone, since: at };
       else if (at - state.candidate.since >= 120) {
         if (state.zone !== null && at - state.changedAt >= 250) {
           state.changes.push(at); state.changedAt = at;

@@ -1,5 +1,6 @@
 import math
 import threading
+import time
 import unittest
 from unittest.mock import Mock
 from types import SimpleNamespace
@@ -215,6 +216,82 @@ class FaceMeasurementTests(unittest.TestCase):
             self.assertIs(observation['valid'], False)
             self.assertEqual(observation['observedAt'], 1000)
             self.assertNotIn('refinement', observation)
+
+
+    def test_per_person_latest_only_skips_stale_frames_and_publishes_independently(self):
+        from concurrent.futures import ThreadPoolExecutor
+        engine = Perception.__new__(Perception)
+        engine.lock = threading.Lock()
+        engine.stop = threading.Event()
+        engine.face_event = threading.Event()
+        engine.version = 0
+        engine.memory_budget = SimpleNamespace(update=lambda _: 100)
+        engine.actions = SimpleNamespace(observe=Mock())
+        engine.sessions = {}
+        engine.latest = {}; engine.scene_latest = {}; engine.pose_latest = {}; engine.rest_latest = {}
+        engine.results = {}; engine.scene_results = {}; engine.timings = {}
+        engine.face_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='test-face')
+
+        seen = {1: [], 2: []}
+        p1_entered = threading.Event()
+        p1_release = threading.Event()
+        p2_done = threading.Event()
+
+        def fake_face(frame, face, at, session, state):
+            fid = face['id']
+            seen[fid].append(at)
+            if fid == 1 and at == 1000:
+                p1_entered.set()
+                p1_release.wait(2.0)
+            if fid == 2:
+                p2_done.set()
+            return dict(valid=True, facePresent=True, observedAt=at, facePixels=face['facePixels'])
+
+        engine._face = fake_face
+        loop = threading.Thread(target=engine._loop, daemon=True)
+        loop.start()
+        try:
+            frame = np.zeros((64, 64, 3), np.uint8)
+            f1 = dict(id=1, box=[.1, .1, .2, .2], facePixels=60)
+            f2 = dict(id=2, box=[.5, .1, .2, .2], facePixels=60)
+            # Submit both people at t=1000: person 1 blocks, person 2 must finish & publish immediately!
+            engine.submit('s', frame, [f1, f2], 1000)
+            self.assertTrue(p1_entered.wait(1.0))
+            self.assertTrue(p2_done.wait(1.0))
+            # While person 1 is still blocked on t=1000, push 3 newer frames (1100, 1200, 1300).
+            engine.submit('s', frame, [f1, f2], 1100)
+            engine.submit('s', frame, [f1, f2], 1200)
+            engine.submit('s', frame, [f1, f2], 1300)
+            # Person 2 is already published even though person 1 hasn't finished t=1000 yet.
+            self.assertIn(2, engine.snapshot('s'))
+            # Release person 1: it must jump straight to latest t=1300, skipping stale 1100 & 1200!
+            p1_release.set()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and engine.snapshot('s').get(1, {}).get('observedAt') != 1300:
+                time.sleep(0.01)
+            self.assertEqual(engine.snapshot('s')[1]['observedAt'], 1300)
+            self.assertEqual(seen[1], [1000, 1300])
+        finally:
+            p1_release.set()
+            engine.stop.set()
+            engine.face_event.set()
+            loop.join(2.0)
+            engine.face_pool.shutdown(wait=True)
+
+
+    def test_match_rest_to_bodies_refreshes_live_person_timestamp_and_matches_closeup_containment(self):
+        from desk_rest import match_rest_to_bodies
+        # Close-up student: large YOLO body box containing a smaller desk-rest cue box (IoU ~ 0.14, containment = 1.0).
+        body = dict(id=5, box=[.1, .1, .6, .8], confidence=.85, seen=1000)
+        cue = dict(box=[.25, .45, .3, .22], confidence=.42)
+        first = match_rest_to_bodies([body], {}, [cue], 1000, 1000)
+        self.assertTrue(first[5]['active'])
+        self.assertEqual(first[5]['personObservedAt'], 1000)
+        # 3 seconds later, live Tier-1 body is still seen at t=4000 -> personObservedAt MUST refresh so it never expires!
+        body_later = dict(id=5, box=[.1, .1, .6, .8], confidence=.82, seen=4000)
+        second = match_rest_to_bodies([body_later], first, [cue], 4000, 4000)
+        self.assertTrue(second[5]['active'])
+        self.assertEqual(second[5]['personObservedAt'], 4000)
 
 
 if __name__ == '__main__':

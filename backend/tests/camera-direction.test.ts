@@ -87,4 +87,21 @@ describe('per-person camera direction and independent evidence sources',()=>{
     const result=tracker.update([{...person,geometryId:20}],2500).filter(t=>t.status==='visible');
     expect(result).toHaveLength(1);expect(result[0].id).toBe(first.id);
   });
+  it('confirms repeated left-right head turns at live AI cadence even when profile_roi takes over at side angles',()=>{
+    const evaluator=new AttentionEvaluator();
+    let result:StudentTrack;
+    // Live ~250ms cadence: frontal (face_landmarker) -> left profile (profile_roi) -> right profile -> left profile.
+    const samples:[number,number,'face_landmarker'|'profile_roi'][]=[
+      [1000,0,'face_landmarker'],[1250,0,'face_landmarker'],
+      [1500,-42,'profile_roi'],[1750,-42,'profile_roi'],
+      [2050,42,'profile_roi'],
+      [2350,-42,'profile_roi'],
+    ];
+    for(const [at,yawDeg,mouthSource] of samples){
+      result=evaluator.evaluate([{id:'A',displayName:'A',color:'',status:'visible',lastSeen:at,
+        faceVisibility:'visible',box:{x:.2,y:.2,width:.2,height:.25},observation:{valid:mouthSource==='face_landmarker',
+          headPoseValid:true,facePixels:90,mouthSource,eyeAspectRatio:.3,yawOffset:Math.abs(yawDeg)/90,yawDeg,pitchDeg:0,observedAt:at}}],at)[0];
+    }
+    expect(result!.signals!.find(s=>s.type==='head_turning')).toMatchObject({state:'confirmed',cycles:3});
+  });
 });

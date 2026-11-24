@@ -1,11 +1,12 @@
 import {useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {SlidersHorizontal,X,RotateCcw} from 'lucide-react';
+import {SlidersHorizontal,X,RotateCcw,ChevronDown,ChevronUp} from 'lucide-react';
 import {CLASSROOM_PRIORITY_IDS,getRuntimeProfileHints,loadDetectionSettingsSchema,normalizeDetectionSettings,readDetectionSettings,saveDetectionSettings} from '../lib/detection-settings';
 import type {DetectionSettingsSchema,DetectionSettings as Settings} from '../lib/detection-settings';
 
 export default function DetectionSettings(){
   const [open,setOpen]=useState(false),[schema,setSchema]=useState<DetectionSettingsSchema|null>(null);
+  const [showDetails,setShowDetails]=useState(true);
   const [objectsEnabled,setObjectsEnabled]=useState(false);
   const [enabled,setEnabled]=useState<Settings['enabled']>({}),[values,setValues]=useState<Record<string,string>>({});
   const [error,setError]=useState(''),[message,setMessage]=useState(''),[retry,setRetry]=useState(0);
@@ -77,6 +78,11 @@ export default function DetectionSettings(){
               <button type="button" className={'control-button '+(isFullPreset?'button-blue':'button-outline')} onClick={()=>applyPreset('full')}>
                 Đầy đủ 11 dấu hiệu + Đồ vật
               </button>
+              <button type="button" className="control-button button-outline threshold-collapse-toggle"
+                aria-expanded={showDetails} onClick={()=>setShowDetails(value=>!value)}>
+                {showDetails?<ChevronUp size={15}/>:<ChevronDown size={15}/>}
+                <span>{showDetails?'Ẩn bảng ngưỡng':'Hiện bảng ngưỡng'}</span>
+              </button>
             </div>
             <div className="threshold-object-card">
               <div className="threshold-object-text">
@@ -91,7 +97,7 @@ export default function DetectionSettings(){
                   setMessage('');setError('');
                 }}><span className="switch-thumb"/></button>
             </div>
-            <div className="threshold-list">{schema.behaviors.map(behavior=>{
+            {showDetails&&<div className="threshold-list">{schema.behaviors.map(behavior=>{
               const requiresObjects=behavior.requiresObjects||behavior.id==='phone'||behavior.id==='laptop';
               return <div key={behavior.id} className="threshold-row" role="group" aria-label={behavior.label}>
                 <label className="threshold-name" title={behavior.description}><input type="checkbox" checked={enabled[behavior.id]??true} aria-label={behavior.label} onChange={event=>{
@@ -107,7 +113,7 @@ export default function DetectionSettings(){
                     disabled={!enabled[behavior.id]} onChange={event=>{setValues({...values,[field.key]:event.target.value});setMessage('');setError('');}}/>
                     <span>{field.unit}</span></span></label>)}</div>
               </div>;
-            })}</div>
+            })}</div>}
           </>}
         </div>
         <footer className="threshold-footer"><div className="threshold-feedback">{error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}</div>

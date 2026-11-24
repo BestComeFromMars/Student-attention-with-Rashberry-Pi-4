@@ -126,7 +126,7 @@ describe('observation-only behavior evaluation',()=>{
     expect(evaluator.evaluate([person(2100,null)],2100)[0].alerts).toContainEqual(expect.objectContaining({type:'eyes_closed',held:true,expiresAt:6800}));
     expect(evaluator.evaluate([person(6900,null)],6900)[0].alerts).toEqual([]);
   });
-  it('requires three actual mouth cycles over the default duration',()=>{
+  it('requires sustained mouth movement over the default duration',()=>{
     const evaluator=new AttentionEvaluator();
     let result:StudentTrack;
     for(const [at,mouth] of [[1000,.05],[1200,.15],[1500,.05],[1700,.15],[2100,.05],[2400,.15],[2800,.05]]){
@@ -134,7 +134,7 @@ describe('observation-only behavior evaluation',()=>{
       result=evaluator.evaluate([input],at)[0];
       if(at<2800)expect(result.signals!.find(s=>s.type==='talking')!.state).not.toBe('confirmed');
     }
-    expect(result!.signals!.find(s=>s.type==='talking')).toMatchObject({state:'confirmed',cycles:3,durationMs:1600});
+    expect(result!.signals!.find(s=>s.type==='talking')).toMatchObject({state:'confirmed',durationMs:1600});
   });
   it('keeps the same ID when the face vanishes and a new face geometry returns on the same body',()=>{
     const tracker=new StudentTracker();

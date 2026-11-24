@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { access } from 'node:fs/promises';
+import { access, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -99,8 +99,20 @@ if (videoPath.toLowerCase().includes(`${resolve(backend, 'tests/test_results').t
   console.warn('          Nen dung video goc trong "backend\\tests\\video real class" hoac "backend\\tests\\videos" de khong bi ve de 2 lop khung.');
 }
 
-if (!await exists(resolve(backend, 'dist/inference.js'))) {
-  console.log('MODEL: Chua co backend/dist, dang build backend...');
+async function backendNeedsBuild() {
+  const target = resolve(backend, 'dist/inference.js');
+  if (!await exists(target)) return true;
+  const distMtime = (await stat(target)).mtimeMs;
+  const srcDir = resolve(backend, 'src');
+  for (const name of await readdir(srcDir)) {
+    if (!name.endsWith('.ts')) continue;
+    if ((await stat(resolve(srcDir, name))).mtimeMs > distMtime) return true;
+  }
+  return false;
+}
+
+if (await backendNeedsBuild()) {
+  console.log('MODEL: Cap nhat backend/dist theo ma nguon moi nhat...');
   await new Promise((ok, fail) => {
     const build = spawn(process.execPath, [resolve(root, 'scripts/build.mjs'), 'backend'], {
       cwd: root, stdio: 'inherit', windowsHide: true,

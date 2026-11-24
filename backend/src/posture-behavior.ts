@@ -3,7 +3,7 @@ import {defaultObservationSettings,type ObservationSettings} from './observation
 
 const GAP=2000;
 type Point={x:number;y:number};
-type Features={mode:'hips'|'elbows';at:number;widthRatio:number;heightRatio:number;tilt:number;slope:number;headLow:boolean|null};
+type Features={mode:'hips'|'elbows';at:number;widthRatio:number;heightRatio:number;tilt:number;slope:number;headLow:boolean|null;headDeep?:boolean};
 export interface PostureInput {
   heading:{value:number;source:string;at:number}|null;
   pose?:BodyPose;
@@ -92,7 +92,27 @@ export class PostureBehavior {
     return {mode,at:pose.observedAt,widthRatio:span/length,heightRatio:(anchor.y-shoulder.y)/span,
       tilt:Math.atan2(Math.abs(anchor.x-shoulder.x),Math.max(0,anchor.y-shoulder.y))*180/Math.PI,
       slope:Math.atan2(Math.abs(left.y-right.y),Math.abs(left.x-right.x))*180/Math.PI,
-      headLow:nose?nose.y>=shoulder.y-.15*span:null};
+      headLow:nose?nose.y>=shoulder.y-.15*span:null,
+      headDeep:nose?nose.y>=shoulder.y+.12*span:false};
+  }
+
+  private headBelowShoulders(pose:BodyPose|undefined,now:number):{at:number;deep:boolean}|null {
+    if(!pose||!fresh(pose.observedAt,now)||!finite(pose.confidence)||pose.confidence<.25||pose.confidence>1||
+      pose.source!=='YOLO11n-pose'||!finite(pose.aspectRatio)||pose.aspectRatio<=0||pose.keypoints.length!==17)return null;
+    const point=(index:number):Point|null=>{
+      const p=pose.keypoints[index];
+      return p&&[p.x,p.y,p.confidence].every(finite)&&p.confidence>=.35&&p.confidence<=1&&
+        p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1?{x:p.x*pose.aspectRatio,y:p.y}:null;
+    };
+    const left=point(5),right=point(6);
+    if(!left||!right)return null;
+    if((point(11)&&point(12))||(point(7)&&point(8)))return null;
+    const shoulder=middle(left,right),span=distance(left,right);
+    if(span<.02)return null;
+    const headCandidates=[point(0),point(1),point(2),point(3),point(4)].filter((p):p is Point=>p!==null);
+    const nose=point(0)??(headCandidates.length?headCandidates.reduce((a,b)=>a.y>=b.y?a:b):null);
+    if(!nose)return null;
+    return {at:pose.observedAt,deep:nose.y>=shoulder.y+.12*span};
   }
 
   update(input:PostureInput,now:number):{signals:BehaviorSignal[];calibration:ObservationCalibration}{
@@ -121,14 +141,18 @@ export class PostureBehavior {
     let slumped:boolean|null=null,bodyTurn:boolean|null=null;
     if(features&&ref){
       slumped=(compressed===true&&(features.headLow===true||tilted===true))||
-        (tilted===true&&features.headLow===true);
-      if(features.headLow===null&&!(compressed===true&&tilted===true))slumped=null;
+        (tilted===true&&features.headLow===true)||
+        features.headDeep===true;
+      if(features.headLow===null&&!(compressed===true&&tilted===true)&&!features.headDeep)slumped=null;
       if(away!==null){
         const narrowed=features.widthRatio/ref.widthRatio<=this.thresholds.torsoNarrowPercent/100;
         const upright=Math.abs(features.tilt-ref.tilt)<=15&&Math.abs(features.slope-ref.slope)<=12;
         bodyTurn=away&&narrowed&&upright;
         if(narrowed&&!upright)bodyTurn=null;
       }
+    } else {
+      const deepHead=this.headBelowShoulders(input.pose,now);
+      if(deepHead?.deep)slumped=true;
     }
     const rest=input.deskRest;
     const restImageAt=rest?.imageAt??now;
@@ -142,11 +166,12 @@ export class PostureBehavior {
     // temporal corroboration rather than pretending it is a strong detection.
     const temporalPerson=rest?.temporalPerson===true&&rest.personObservedAt!==undefined&&rest.personConfidence>=.03&&
       finite(rest.candidateConfidence)&&rest.candidateConfidence>=.03&&rest.candidateConfidence<=1;
-    const restPositive=restKnown&&rest.active&&rest.confidence>=this.thresholds.deskRestConfidencePercent/100&&(rest.personConfidence>=.1||temporalPerson||trackedPerson&&rest.personConfidence>=.03);
+    const restMinConf=this.slump.accumulating?Math.min(this.thresholds.deskRestConfidencePercent/100,.17):this.thresholds.deskRestConfidencePercent/100;
+    const restPositive=restKnown&&rest.active&&rest.confidence>=restMinConf&&(rest.personConfidence>=.1||temporalPerson||trackedPerson&&rest.personConfidence>=.03);
     const upright=features&&features.headLow===false&&features.tilt<30&&features.heightRatio>(features.mode==='hips'?.65:.33);
     const restAccepted=restPositive&&!upright;
     if(restAccepted)slumped=true;
-    const poseAt=restAccepted?rest!.observedAt:features?.at??now;
+    const poseAt=restAccepted?rest!.observedAt:features?.at??input.pose?.observedAt??now;
     const torsoAt=Math.min(headAt,poseAt);
     const smileKnown=input.smile&&fresh(input.smile.at,now)&&[input.smile.left,input.smile.right].every(v=>finite(v)&&v>=0&&v<=1);
     const smiling=smileKnown?input.smile!.left>=this.thresholds.smilePercent/100&&input.smile!.right>=this.thresholds.smilePercent/100:null;
@@ -156,7 +181,7 @@ export class PostureBehavior {
       {type:'head_turned',label:'Quay lệch hướng lâu',...head,observedAt:headAt},
       {type:'torso_turned',label:'Có dấu hiệu quay thân sang bên',...direction.torso.update(bodyTurn,torsoAt,now,this.thresholds.torsoTurnedMs),observedAt:torsoAt},
       {type:'turned_smiling',label:'Quay sang bên kèm cười',...direction.smile.update(smileActive,smileAt,now,this.thresholds.turnedSmilingMs),observedAt:smileAt},
-      {type:'upper_body_slumped',label:'Có dấu hiệu gục đầu/thân trên',...this.slump.update(slumped,poseAt,now,this.thresholds.slumpMs),observedAt:poseAt},
+      {type:'upper_body_slumped',label:'Có dấu hiệu gục đầu/thân trên',...this.slump.update(slumped,poseAt,now,this.thresholds.slumpMs,600),observedAt:poseAt},
     ];
     return {signals,calibration:{state:'ready',headingReady:true,postureReady:true,reference:'camera',
       startedAt:this.startedAt,expiresAt:this.startedAt}};

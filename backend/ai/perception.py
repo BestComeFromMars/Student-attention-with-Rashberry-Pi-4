@@ -4,6 +4,7 @@ import threading
 import time
 import gc
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 import cv2
@@ -112,9 +113,18 @@ class Perception:
         self.results = {}
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.face_event = threading.Event()
+        self.pose_event = threading.Event()
+        self.rest_event = threading.Event()
+        self.version = 0
+        self.face_local = threading.local()
+        self._face_models = []
+        self.face_workers = max(1, min(6, int(os.environ.get('AI_FACE_WORKERS', str(self.profile_cfg.get('faceWorkers', 2))))))
+        self.face_pool = ThreadPoolExecutor(max_workers=self.face_workers, thread_name_prefix='face-person')
         self.face_error = None
         self.scene_error = None
-        self.timings = {'opencvThreads': cv2.getNumThreads(), 'profile': self.profile_cfg['name'], 'personModel': self.person_model_name}
+        self.timings = {'opencvThreads': cv2.getNumThreads(), 'profile': self.profile_cfg['name'],
+                        'personModel': self.person_model_name, 'faceWorkers': self.face_workers}
         self.thread = threading.Thread(target=self._loop, name="behavior-analysis", daemon=False)
         self.scene_thread = threading.Thread(target=self._scene_loop, name="objects-analysis", daemon=False)
         self.pose_thread = threading.Thread(target=self._pose_loop, name='person-pose', daemon=False)
@@ -156,17 +166,38 @@ class Perception:
                     self.pose = YOLO(str(self.models / 'yolo11n-pose.pt'))
             return self.pose
 
+    def _create_face_landmarker(self):
+        vision = mp.tasks.vision
+        options = mp.tasks.BaseOptions
+        return vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+            base_options=options(model_asset_path=str(self.models/"face_landmarker.task")),
+            running_mode=vision.RunningMode.IMAGE, num_faces=1,
+            min_face_detection_confidence=.3, min_face_presence_confidence=.45,
+            output_face_blendshapes=True, output_facial_transformation_matrixes=True))
+
     def _ensure_face(self):
         with self.model_lock:
             if self.face is None:
-                vision = mp.tasks.vision
-                options = mp.tasks.BaseOptions
-                self.face = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
-                    base_options=options(model_asset_path=str(self.models/"face_landmarker.task")),
-                    running_mode=vision.RunningMode.IMAGE, num_faces=1,
-                    min_face_detection_confidence=.3, min_face_presence_confidence=.45,
-                    output_face_blendshapes=True, output_facial_transformation_matrixes=True))
+                self.face = self._create_face_landmarker()
+                if hasattr(self, '_face_models'):
+                    self._face_models.append(self.face)
             return self.face
+
+    def _worker_face(self):
+        local = getattr(self, 'face_local', None)
+        if local is None:
+            return self._ensure_face() if getattr(self, 'face', None) is None else self.face
+        model = getattr(local, 'face', None)
+        if model is None:
+            with self.model_lock:
+                if self.face is not None and not getattr(self, '_primary_face_claimed', False):
+                    model = self.face
+                    self._primary_face_claimed = True
+                else:
+                    model = self._create_face_landmarker()
+                    self._face_models.append(model)
+            local.face = model
+        return model
 
     def _ensure_profile(self):
         with self.model_lock:
@@ -271,12 +302,43 @@ class Perception:
         with self.lock:
             if need_face:
                 self.latest[session] = (frame, faces, at, state)
+                alive = {face['id'] for face in faces}
+                person_latest = state.setdefault('personLatest', {})
+                person_last_at = state.setdefault('personLastAt', {})
+                for dead in list(person_latest):
+                    if dead not in alive:
+                        person_latest.pop(dead, None)
+                for dead in list(person_last_at):
+                    if dead not in alive:
+                        person_last_at.pop(dead, None)
+                if 'profileRois' in state:
+                    state['profileRois'] = {k: v for k, v in state['profileRois'].items() if k in alive}
+                if 'faceCache' in state:
+                    state['faceCache'] = {k: v for k, v in state['faceCache'].items() if k in alive}
+                if hasattr(self, 'results') and session in self.results:
+                    self.results[session] = {k: v for k, v in self.results[session].items() if k in alive}
+                state['denseFaceBatch'] = len(faces) > 6
+                state['latestFacesAt'] = at
+                state['latestFaceIds'] = alive
+                for face in faces:
+                    person_latest[face['id']] = (frame, face, at)
+                if not faces:
+                    if hasattr(self, 'results'):
+                        self.results[session] = {}
+                    state['faceAt'] = at
+                    self.version = getattr(self, 'version', 0) + 1
             if need_objects:
                 self.scene_latest[session] = (frame, faces, at, state)
             if need_pose:
                 self.pose_latest[session] = (frame, at, state)
             if need_rest:
                 self.rest_latest[session] = (frame, at, state)
+        if need_face and hasattr(self, 'face_event'):
+            self.face_event.set()
+        if need_pose and hasattr(self, 'pose_event'):
+            self.pose_event.set()
+        if need_rest and hasattr(self, 'rest_event'):
+            self.rest_event.set()
 
     def snapshot(self, session, *, with_timestamp=False):
         with self.lock:
@@ -355,15 +417,26 @@ class Perception:
 
     def _rest_loop(self):
         interval = getattr(self, 'profile_cfg', {}).get('restIntervalMs', 500)
-        while not self.stop.wait(.02):
+        rest_event = getattr(self, 'rest_event', None)
+        while not self.stop.is_set():
+            if rest_event is not None:
+                rest_event.wait(.02)
+                rest_event.clear()
+            else:
+                if self.stop.wait(.02):
+                    break
+            if self.stop.is_set():
+                break
             with self.lock:
-                pending = list(self.rest_latest.items())
-                self.rest_latest.clear()
+                pending = []
+                for session, item in list(self.rest_latest.items()):
+                    _, at, state = item
+                    if at - state.get('restAt', 0) >= interval:
+                        pending.append((session, item))
+                        self.rest_latest.pop(session, None)
             for session, (frame, at, state) in pending:
                 try:
                     if not self._feature_enabled(session, 'deskRest'):
-                        continue
-                    if at - state.get('restAt', 0) < interval:
                         continue
                     started = time.perf_counter()
                     evidence = self._ensure_desk_rest().predict(frame)
@@ -376,6 +449,7 @@ class Perception:
                         state['restObservations'] = {k: v for k, v in rest_obs.items() if v.get('active')}
                         if state.get('restBodyTracking'):
                             state['restBodyTracking'].update(evidence, at)
+                        self.version = getattr(self, 'version', 0) + 1
                         self.timings.update(
                             restLatencyMs=int(time.time() * 1000) - at,
                             restInferenceMs=round((time.perf_counter() - started) * 1000, 2),
@@ -434,16 +508,31 @@ class Perception:
 
     def _pose_loop(self):
         interval = getattr(self, 'profile_cfg', {}).get('poseIntervalMs', 400)
-        while not self.stop.wait(.015):
-            with self.lock:pending=list(self.pose_latest.items());self.pose_latest.clear()
+        pose_event = getattr(self, 'pose_event', None)
+        while not self.stop.is_set():
+            if pose_event is not None:
+                pose_event.wait(.015)
+                pose_event.clear()
+            else:
+                if self.stop.wait(.015):
+                    break
+            if self.stop.is_set():
+                break
+            with self.lock:
+                pending = []
+                for session, item in list(self.pose_latest.items()):
+                    _, at, state = item
+                    if at - state.get('poseAt', 0) >= interval:
+                        pending.append((session, item))
+                        self.pose_latest.pop(session, None)
             for session,(frame,at,state) in pending:
                 try:
                     if not self._feature_enabled(session, 'pose'): continue
-                    if at-state.get('poseAt',0)<interval:continue
                     result=self._pose(frame,at)
                     with self.lock:
                         if self.sessions.get(session) is not state:continue
                         self._publish_pose(state,result,at)
+                        self.version = getattr(self, 'version', 0) + 1
                         self.timings.update(poseLatencyMs=int(time.time()*1000)-at,poseError=None,
                             poseDetections=len(result['poseRegions']),poseMatches=len(state['poseObservations']),
                             poseBodyCandidates=state['poseBodyCandidates'],poseBestIoU=state['poseBestIoU'])
@@ -565,7 +654,7 @@ class Perception:
         factor = 256/max(crop.shape[:2])
         scaled = cv2.resize(crop,(max(1,round(crop.shape[1]*factor)),max(1,round(crop.shape[0]*factor))))
         rgb = np.ascontiguousarray(cv2.cvtColor(scaled,cv2.COLOR_BGR2RGB))
-        face_model = self._ensure_face() if getattr(self, 'face', None) is None else self.face
+        face_model = self._worker_face()
         result = face_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
         if not result.face_landmarks:
             skip_bright = getattr(self, 'profile_cfg', {}).get('skipLowLightRetryWhenNormal', False)
@@ -668,66 +757,107 @@ class Perception:
             yawDeg=yaw, pitchDeg=pitch,
             observedAt=at, facePixels=float(face['facePixels']), quality=quality)
 
-    def _loop(self):
-        batch_limit = getattr(self, 'profile_cfg', {}).get('faceBatchLimit', 12)
-        while not self.stop.wait(.01):
+    def _process_person(self, session, state, face_id):
+        try:
             with self.lock:
-                pending = list(self.latest.items())
-                self.latest.clear()
-            for session,(frame,faces,at,state) in pending:
-                try:
-                    use_mesh = self._feature_enabled(session, 'faceMesh')
-                    use_heading = self._feature_enabled(session, 'faceHeading')
-                    if not use_mesh and not use_heading:
+                if self.sessions.get(session) is not state or self.stop.is_set():
+                    return
+                job = state.get('personLatest', {}).pop(face_id, None)
+                dense = bool(state.get('denseFaceBatch', False))
+            if job is None:
+                return
+            frame, face, at = job
+            use_mesh = self._feature_enabled(session, 'faceMesh')
+            use_heading = self._feature_enabled(session, 'faceHeading')
+            if not use_mesh and not use_heading:
+                return
+            self._dense_face_batch = dense
+            if use_mesh and face.get('facePixels', 0) >= 24:
+                measurement = self._face(frame, face, at, session, state)
+            elif use_heading:
+                measurement = self._face_heading_only(frame, face, at)
+            else:
+                measurement = None
+            with self.lock:
+                if self.sessions.get(session) is not state:
+                    return
+                cache = state.setdefault('faceCache', {})
+                if measurement:
+                    existing = cache.get(face_id)
+                    if not (
+                        not measurement.get('valid') and not measurement.get('headPoseValid')
+                        and existing and (existing.get('valid') or existing.get('headPoseValid'))
+                        and 0 <= at - existing.get('observedAt', 0) <= 350
+                    ):
+                        cache[face_id] = measurement
+                published = cache.get(face_id)
+                if published is not None:
+                    self.results.setdefault(session, {})[face_id] = dict(published)
+                person_last_at = state.setdefault('personLastAt', {})
+                person_last_at[face_id] = max(person_last_at.get(face_id, 0), at)
+                active_ids = state.get('latestFaceIds') or set()
+                if active_ids and all(person_last_at.get(fid, 0) >= at for fid in active_ids):
+                    state['faceAt'] = max(state.get('faceAt', 0), at)
+                elif not active_ids:
+                    state['faceAt'] = max(state.get('faceAt', 0), at)
+                self.version = getattr(self, 'version', 0) + 1
+                self.timings['faceLatencyMs'] = int(time.time() * 1000) - at
+            self.face_error = None
+        except Exception as error:
+            import traceback
+            traceback.print_exc()
+            self.face_error = str(error)
+        finally:
+            retrigger = False
+            with self.lock:
+                state.get('personBusy', set()).discard(face_id)
+                if self.sessions.get(session) is state and face_id in state.get('personLatest', {}):
+                    retrigger = True
+            if retrigger and hasattr(self, 'face_event'):
+                self.face_event.set()
+
+    def _loop(self):
+        face_event = getattr(self, 'face_event', None)
+        while not self.stop.is_set():
+            if face_event is not None:
+                face_event.wait(.015)
+                face_event.clear()
+            else:
+                if self.stop.wait(.01):
+                    break
+            if self.stop.is_set():
+                break
+            candidates = []
+            with self.lock:
+                for session, state in list(self.sessions.items()):
+                    person_latest = state.get('personLatest')
+                    if not person_latest:
                         continue
-                    count = len(faces)
-                    mesh_candidates = [f for f in faces if f.get('facePixels', 0) >= 24]
-                    m_count = len(mesh_candidates)
-                    selected = [mesh_candidates[(state["cursor"]+i)%m_count] for i in range(min(batch_limit,m_count))] if m_count else []
-                    state["cursor"] = (state["cursor"]+len(selected))%max(1,m_count)
-                    selected_ids = {f["id"] for f in selected}
-                    self._dense_face_batch = count > 6
-                    alive = {face["id"] for face in faces}
-                    state['profileRois'] = {key:value for key,value in state.get('profileRois',{}).items() if key in alive}
-                    cache = {key:value for key,value in state["faceCache"].items() if key in alive}
-                    for face in selected:
+                    person_busy = state.setdefault('personBusy', set())
+                    person_last_at = state.setdefault('personLastAt', {})
+                    for face_id in list(person_latest):
+                        if face_id not in person_busy:
+                            candidates.append((person_last_at.get(face_id, 0), session, state, face_id))
+                candidates.sort(key=lambda item: item[0])
+                to_submit = []
+                for _, session, state, face_id in candidates:
+                    if self.sessions.get(session) is not state:
+                        continue
+                    person_busy = state.setdefault('personBusy', set())
+                    if face_id in person_busy or face_id not in state.get('personLatest', {}):
+                        continue
+                    person_busy.add(face_id)
+                    to_submit.append((session, state, face_id))
+            pool = getattr(self, 'face_pool', None)
+            for session, state, face_id in to_submit:
+                if pool is not None:
+                    try:
+                        pool.submit(self._process_person, session, state, face_id)
+                    except RuntimeError:
                         with self.lock:
-                            active=self.sessions.get(session) is state
-                        if not active:
-                            break
-                        measurement = self._face(frame,face,at,session,state) if use_mesh else self._face_heading_only(frame,face,at)
-                        if measurement:
-                            existing = cache.get(face["id"])
-                            if (not measurement.get('valid') and not measurement.get('headPoseValid')
-                                    and existing and (existing.get('valid') or existing.get('headPoseValid'))
-                                    and 0 <= at - existing.get('observedAt', 0) <= 350):
-                                continue
-                            cache[face["id"]] = measurement
-                    if use_heading:
-                        for face in faces:
-                            if face["id"] in selected_ids:
-                                continue
-                            existing = cache.get(face["id"])
-                            if existing and existing.get('valid') and at - existing.get('observedAt', 0) <= 1000:
-                                continue
-                            quick = self._face_heading_only(frame, face, at)
-                            if quick.get('headPoseValid'):
-                                cache[face["id"]] = quick
-                    state["faceCache"] = cache
-                    output = {}
-                    for face in faces:
-                        observation = dict(cache.get(face["id"],dict(valid=False,eyeAspectRatio=0,yawOffset=0,observedAt=at)))
-                        output[face["id"]] = observation
-                    with self.lock:
-                        if self.sessions.get(session) is state:
-                            self.results[session] = output
-                            state['faceAt'] = at
-                            self.timings['faceLatencyMs']=int(time.time()*1000)-at
-                    self.face_error = None
-                except Exception as error:
-                    import traceback
-                    traceback.print_exc()
-                    self.face_error = str(error)
+                            state.get('personBusy', set()).discard(face_id)
+                else:
+                    self._process_person(session, state, face_id)
 
     def _publish_object_geometry(self,session,state):
         # Hand/interaction analysis must not withhold ready object rectangles.
@@ -793,6 +923,7 @@ class Perception:
                             self.scene_results[session] = output
                             self.scene_boxes[session] = list(state["bodies"])
                             self.scene_objects[session] = dict(at=state['objectsAt'],objects=detected_objects)
+                            self.version = getattr(self, 'version', 0) + 1
                             self.timings['sceneLatencyMs']=int(time.time()*1000)-at
                     self.scene_error = None
                 except Exception as error:
@@ -802,11 +933,24 @@ class Perception:
 
     def close(self):
         self.stop.set()
+        for event in (getattr(self, 'face_event', None), getattr(self, 'pose_event', None), getattr(self, 'rest_event', None)):
+            if event is not None:
+                event.set()
         self.thread.join(timeout=10)
+        if getattr(self, 'face_pool', None) is not None:
+            self.face_pool.shutdown(wait=True, cancel_futures=True)
         self.scene_thread.join(timeout=10)
         self.pose_thread.join(timeout=10)
         self.rest_thread.join(timeout=10)
         self.actions.close()
-        if self.face is not None: self.face.close()
+        closed_models = set()
+        for model in list(getattr(self, '_face_models', [])):
+            if id(model) not in closed_models:
+                closed_models.add(id(model))
+                try: model.close()
+                except Exception: pass
+        if self.face is not None and id(self.face) not in closed_models:
+            try: self.face.close()
+            except Exception: pass
         if self.profile is not None: self.profile.close()
         if self.hands is not None: self.hands.close()

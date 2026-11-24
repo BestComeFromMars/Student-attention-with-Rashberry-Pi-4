@@ -252,4 +252,16 @@ describe('posture integration and lifecycle',()=>{
     expect(contexts.at(-1)).not.toBe(id);expect(release).toHaveBeenCalledWith(id);
     sessions.delete(id,engine);expect(release).toHaveBeenCalledWith(contexts.at(-1));
   });
+  it('confirms desk slump when head drops clearly below shoulders even if hips and elbows are occluded under the desk',()=>{
+    const engine=new PostureBehavior(1000);
+    const deskSlumpPose=(at:number):BodyPose=>{
+      const keypoints=Array.from({length:17},()=>({x:.5,y:.8,confidence:0}));
+      keypoints[0]={x:.5,y:.62,confidence:.9};
+      keypoints[5]={x:.3,y:.50,confidence:.9};keypoints[6]={x:.7,y:.50,confidence:.9};
+      return {box:{x:.15,y:.2,width:.7,height:.7},aspectRatio:1,keypoints,confidence:.85,observedAt:at,source:'YOLO11n-pose'};
+    };
+    let result:ReturnType<PostureBehavior['update']>;
+    for(const at of [1000,1500,2000,2600])result=engine.update({heading:null,smile:null,pose:deskSlumpPose(at)},at);
+    expect(find(result!,'upper_body_slumped').state).toBe('confirmed');
+  });
 });

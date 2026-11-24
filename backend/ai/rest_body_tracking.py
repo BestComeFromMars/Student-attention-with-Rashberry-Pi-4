@@ -31,9 +31,9 @@ class RestBodyTracking:
         for old in available.values():old.update(active=False,checkedAt=at)
         used=set()
         for cue in sorted(evidence,key=lambda item:item['confidence'],reverse=True):
-            if cue['confidence']<.25:continue
+            if cue['confidence']<.17:continue
             candidates=sorted([(iou(old['box'],cue['box']),identity) for identity,old in available.items()
-                if identity not in used and iou(old['box'],cue['box'])>=.5],reverse=True)
+                if identity not in used and iou(old['box'],cue['box'])>=.45],reverse=True)
             if not candidates or len(candidates)>1 and candidates[0][0]-candidates[1][0]<.05:continue
             _,identity=candidates[0];used.add(identity)
             available[identity].update(box=list(cue['box']),at=at,checkedAt=at,confidence=cue['confidence'],active=True)

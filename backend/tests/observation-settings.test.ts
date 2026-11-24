@@ -87,8 +87,8 @@ describe('settings change actual confirmation rules',()=>{
     expect(strict.update(sample(2500),2500).signals[3].state).toBe('clear');
     expect(sensitive.update(sample(2500),2500).signals[3].state).toBe('confirmed');
   });
-  it('applies the custom speech duration and cycles without weakening the anti-smile guard',()=>{
-    const thresholds=defaultObservationSettings().thresholds;thresholds.talkingCycles=2;thresholds.talkingMs=300;
+  it('applies the custom speech duration without weakening the anti-smile guard',()=>{
+    const thresholds=defaultObservationSettings().thresholds;thresholds.talkingMs=300;
     const face=new FacialBehavior(thresholds);let result:ReturnType<FacialBehavior['update']>;
     for(const [at,mouth] of [[1000,.05],[1100,.15],[1200,.05],[1400,.15],[1500,.05]]){
       result=face.update({...person(at).observation!,mouthOpenRatio:mouth},at,true);

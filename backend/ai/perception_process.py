@@ -47,7 +47,7 @@ def run(models, frames, commands, results, export_native_lock=None, parent_pid=N
         sessions = set()
         released = set()
         stopped = False
-        last_push = 0.0
+        last_version = -1
         last_parent_check = time.monotonic()
         while not stopped:
             now_check = time.monotonic()
@@ -78,22 +78,32 @@ def run(models, frames, commands, results, export_native_lock=None, parent_pid=N
                     released.add(session)
                     sessions.discard(session)
                     analysis.release(session)
+                    got_work = True
             if stopped:
                 break
+            latest_frames = {}
             try:
-                session, frame, bodies, faces, at = frames.get(timeout=.025)
+                item = frames.get(timeout=.015)
+                latest_frames[item[0]] = item
+                while True:
+                    try:
+                        newer = frames.get_nowait()
+                        latest_frames[newer[0]] = newer
+                    except Empty:
+                        break
+            except Empty:
+                pass
+            for session, frame, bodies, faces, at in latest_frames.values():
                 if session not in released:
                     sessions.add(session)
                     analysis.submit(session, frame, faces, at, bodies=bodies)
                     got_work = True
-            except Empty:
-                pass
             if not sessions:
                 continue
-            now_mono = time.monotonic()
-            if not got_work and now_mono - last_push < .06:
+            current_version = getattr(analysis, 'version', 0)
+            if not got_work and current_version == last_version:
                 continue
-            last_push = now_mono
+            last_version = current_version
             latest_put(results, dict(
                 type='snapshot',
                 sessions={

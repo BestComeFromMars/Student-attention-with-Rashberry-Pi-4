@@ -21,9 +21,9 @@ def decode_rest(prediction,transform):
     if rows.ndim!=2 or rows.shape[1]!=11:raise ValueError('Unexpected auxiliary model layout')
     scores=rows[:,5]  # class 1: Sleeping, used only as an observed posture cue
     other=np.max(np.concatenate([rows[:,4:5],rows[:,6:]],axis=1),axis=1)
-    indices=np.flatnonzero((scores>=.25)&(scores-other>=.05))
+    indices=np.flatnonzero(((scores>=.25)&(scores-other>=.05))|((scores>=.17)&(scores-other>=.12)))
     boxes=rows[indices,:4].copy();boxes[:,:2]-=boxes[:,2:]/2
-    kept=cv2.dnn.NMSBoxes(boxes.tolist(),scores[indices].tolist(),.25,.45)
+    kept=cv2.dnn.NMSBoxes(boxes.tolist(),scores[indices].tolist(),.17,.45)
     width,height,scale,left,top=transform;output=[]
     for kept_index in np.asarray(kept,dtype=int).reshape(-1):
         index=indices[kept_index];x,y,w,h=boxes[kept_index]
@@ -211,26 +211,30 @@ def match_rest_to_bodies(bodies,observations,evidence,cue_at,at):
             output[body['id']]={**old,'active':False,'confidence':0,'observedAt':cue_at}
     used=set()
     for cue in sorted(evidence,key=lambda item:item['confidence'],reverse=True):
-        if cue['confidence']<.25:continue
+        if cue['confidence']<.17:continue
         candidates=[]
         for body in bodies:
             identity=body['id']
             if identity in used:continue
+            if cue['confidence']<.25 and identity not in observations:continue
             ov=iou(body['box'],cue['box'])
             ct=_containment(body['box'],cue['box'])
-            if ov>=.30 or (ct>=.65 and ov>=.18):
+            if ov>=.25 or (ct>=.60 and ov>=.10):
                 candidates.append((ov+.35*ct,identity,body))
         candidates.sort(key=lambda item:-item[0])
         if not candidates or (len(candidates)>1 and candidates[0][0]-candidates[1][0]<.05):continue
         _,identity,body=candidates[0];used.add(identity)
         old=observations.get(identity,{})
-        conf=max(.1,float(body.get('confidence',.5)))
-        person_at=old.get('personObservedAt',body.get('seen',body.get('at',at)))
+        raw_conf=float(body.get('confidence',.5))
+        conf=max(.1,raw_conf)
+        body_at=body.get('seen',body.get('at'))
+        live_person=body_at is not None and raw_conf>=.1 and not body.get('temporalPerson')
+        person_at=body_at if live_person else old.get('personObservedAt',at)
         output[identity]={
             **old,
             'active':True,
             'confidence':float(cue['confidence']),
-            'personConfidence':old.get('personConfidence',conf),
+            'personConfidence':conf if live_person else old.get('personConfidence',conf),
             'candidateConfidence':conf,
             'personObservedAt':person_at,
             'box':list(cue['box']),
