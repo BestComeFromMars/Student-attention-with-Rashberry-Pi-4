@@ -1,0 +1,186 @@
+{
+  "profile": "balanced (16GB)",
+  "generatedAt": "2026-11-24 18:57:10",
+  "videos": [
+    {
+      "video": "class100.mp4",
+      "output": "class100_result.mp4",
+      "resolution": "960x540",
+      "durationSec": 36.8,
+      "outputFrames": 552,
+      "aiResponses": 39,
+      "avgAiMs": 950.9,
+      "maxPeople": 27,
+      "maxFaces": 19,
+      "sizeMB": 4.79,
+      "confirmed": {
+        "upper_body_slumped": [
+          "AQ",
+          "I"
+        ]
+      }
+    },
+    {
+      "video": "class101.mp4",
+      "output": "class101_result.mp4",
+      "resolution": "960x540",
+      "durationSec": 23.8,
+      "outputFrames": 357,
+      "aiResponses": 25,
+      "avgAiMs": 959.3,
+      "maxPeople": 29,
+      "maxFaces": 22,
+      "sizeMB": 3.28,
+      "confirmed": {
+        "upper_body_slumped": [
+          "T"
+        ]
+      }
+    },
+    {
+      "video": "class102.mp4",
+      "output": "class102_result.mp4",
+      "resolution": "960x540",
+      "durationSec": 79.6,
+      "outputFrames": 1194,
+      "aiResponses": 66,
+      "avgAiMs": 1207.4,
+      "maxPeople": 28,
+      "maxFaces": 26,
+      "sizeMB": 9.79,
+      "confirmed": {
+        "upper_body_slumped": [
+          "AS"
+        ]
+      }
+    },
+    {
+      "video": "video test chieu nay.mp4",
+      "output": "video test chieu nay_result.mp4",
+      "resolution": "854x480",
+      "durationSec": 16.1,
+      "outputFrames": 241,
+      "aiResponses": 24,
+      "avgAiMs": 698.7,
+      "maxPeople": 4,
+      "maxFaces": 3,
+      "sizeMB": 0.4,
+      "confirmed": {
+        "head_down": [
+          "A",
+          "B"
+        ],
+        "head_turned": [
+          "B"
+        ],
+        "talking": [
+          "A",
+          "B"
+        ]
+      }
+    },
+    {
+      "video": "class_1.mp4",
+      "output": "class_1_result.mp4",
+      "resolution": "960x544",
+      "durationSec": 15.0,
+      "outputFrames": 175,
+      "aiResponses": 9,
+      "avgAiMs": 1711.4,
+      "maxPeople": 19,
+      "maxFaces": 18,
+      "sizeMB": 0.43,
+      "confirmed": {}
+    },
+    {
+      "video": "class_2.mp4",
+      "output": "class_2_result.mp4",
+      "resolution": "960x544",
+      "durationSec": 15.0,
+      "outputFrames": 161,
+      "aiResponses": 16,
+      "avgAiMs": 938.6,
+      "maxPeople": 19,
+      "maxFaces": 18,
+      "sizeMB": 0.45,
+      "confirmed": {
+        "upper_body_slumped": [
+          "S"
+        ]
+      }
+    },
+    {
+      "video": "class_3.mp4",
+      "output": "class_3_result.mp4",
+      "resolution": "960x544",
+      "durationSec": 17.8,
+      "outputFrames": 183,
+      "aiResponses": 15,
+      "avgAiMs": 1185.6,
+      "maxPeople": 21,
+      "maxFaces": 18,
+      "sizeMB": 0.8,
+      "confirmed": {
+        "upper_body_slumped": [
+          "T"
+        ]
+      }
+    },
+    {
+      "video": "class_4.mp4",
+      "output": "class_4_result.mp4",
+      "resolution": "960x544",
+      "durationSec": 12.2,
+      "outputFrames": 142,
+      "aiResponses": 14,
+      "avgAiMs": 885.3,
+      "maxPeople": 18,
+      "maxFaces": 17,
+      "sizeMB": 0.58,
+      "confirmed": {}
+    },
+    {
+      "video": "class_5.mp4",
+      "output": "class_5_result.mp4",
+      "resolution": "960x544",
+      "durationSec": 14.8,
+      "outputFrames": 181,
+      "aiResponses": 16,
+      "avgAiMs": 931.4,
+      "maxPeople": 19,
+      "maxFaces": 18,
+      "sizeMB": 0.7,
+      "confirmed": {
+        "upper_body_slumped": [
+          "C"
+        ]
+      }
+    },
+    {
+      "video": "class_6.mp4",
+      "output": "class_6_result.mp4",
+      "resolution": "960x540",
+      "durationSec": 10.0,
+      "outputFrames": 150,
+      "aiResponses": 10,
+      "avgAiMs": 1013.3,
+      "maxPeople": 23,
+      "maxFaces": 24,
+      "sizeMB": 0.55,
+      "confirmed": {}
+    },
+    {
+      "video": "class_7.mp4",
+      "output": "class_7_result.mp4",
+      "resolution": "960x540",
+      "durationSec": 10.0,
+      "outputFrames": 150,
+      "aiResponses": 9,
+      "avgAiMs": 1110.1,
+      "maxPeople": 24,
+      "maxFaces": 22,
+      "sizeMB": 0.47,
+      "confirmed": {}
+    }
+  ]
+}
