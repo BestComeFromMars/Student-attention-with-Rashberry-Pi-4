@@ -67,6 +67,8 @@ export interface FaceObservation {
   jawOpen?: number | null;
   eyeBlinkLeft?: number | null;
   eyeBlinkRight?: number | null;
+  eyeLookDownLeft?: number | null;
+  eyeLookDownRight?: number | null;
   mouthSmileLeft?: number | null;
   mouthSmileRight?: number | null;
   phoneHeld?: boolean | null;

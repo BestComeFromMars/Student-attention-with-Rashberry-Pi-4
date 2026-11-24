@@ -18,7 +18,7 @@ def profile_yaw(face, minimum=30):
         return None
     eyes = anchors[1]-anchors[0]
     span2 = float(eyes@eyes)
-    if span2 < 36:
+    if span2 < 12:
         return None
     offset = float((anchors[2]-(anchors[0]+anchors[1])/2)@eyes/span2)
     # This is a signed orientation proxy from SCRFD/YuNet anchors, not a calibrated
@@ -63,7 +63,7 @@ class ProfileLandmarker:
     def __init__(self, model_path):
         with ZipFile(model_path) as bundle:
             weights = bundle.read('face_landmarks_detector.tflite')
-        options = graph_options.FaceLandmarksDetectorGraphOptions(min_detection_confidence=.9)
+        options = graph_options.FaceLandmarksDetectorGraphOptions(min_detection_confidence=.7)
         options.base_options.model_asset.file_content = weights
         config = calculator_pb2.CalculatorGraphConfig(input_stream=['image', 'roi'],
                                                        output_stream=['landmarks', 'score'])
@@ -76,7 +76,7 @@ class ProfileLandmarker:
     def detect(self, frame, face, state):
         rois = state.setdefault('profileRois', {})
         yaw = profile_yaw(face, 25 if face['id'] in rois else 30)
-        if yaw is None or face.get('score', 0) < .85 or face['facePixels'] < 48:
+        if yaw is None or face.get('score', 0) < .65 or face['facePixels'] < 22:
             return None
         height, width = frame.shape[:2]
         x, y, w, h = face['box']

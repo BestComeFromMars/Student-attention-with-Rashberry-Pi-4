@@ -49,12 +49,11 @@ class Dwell {
 
 /** Camera-facing is the reference immediately; no per-student calibration delay. */
 export class PostureBehavior {
-  // Keep evidence per measurement source. Alternating a valid face pose and
-  // body keypoints must neither erase every dwell nor combine unlike samples.
-  private readonly directions=new Map<string,{head:Dwell;torso:Dwell;smile:Dwell;turned:boolean}>();
+  private readonly direction={head:new Dwell(),torso:new Dwell(),smile:new Dwell(),turned:false};
   private readonly slump=new Dwell();
   private elbows:{at:number;point:Point}[]=[];
   private lastElbowAt=-Infinity;
+  private frontalShoulderRatio:number|null=null;
   private readonly cameraYaw:number;
   constructor(private readonly startedAt:number,cameraYaw=0,private readonly thresholds:ObservationSettings['thresholds']=defaultObservationSettings().thresholds){this.cameraYaw=finite(cameraYaw)&&Math.abs(cameraYaw)<=90?cameraYaw:0;}
 
@@ -112,26 +111,46 @@ export class PostureBehavior {
     const headCandidates=[point(0),point(1),point(2),point(3),point(4)].filter((p):p is Point=>p!==null);
     const nose=point(0)??(headCandidates.length?headCandidates.reduce((a,b)=>a.y>=b.y?a:b):null);
     if(!nose)return null;
-    return {at:pose.observedAt,deep:nose.y>=shoulder.y+.12*span};
+    return {at:pose.observedAt,deep:nose.y>=shoulder.y+.06*span};
+  }
+
+  private seatedTorsoTurn(pose:BodyPose|undefined,now:number,away:boolean|null,difference:number|null):boolean|null {
+    if(away===null||!pose||!fresh(pose.observedAt,now)||!finite(pose.confidence)||pose.confidence<.25||pose.confidence>1||
+      pose.source!=='YOLO11n-pose'||!finite(pose.aspectRatio)||pose.aspectRatio<=0||pose.keypoints.length!==17)return null;
+    const ls=pose.keypoints[5],rs=pose.keypoints[6];
+    if(!ls||!rs||![ls.x,ls.y,ls.confidence,rs.x,rs.y,rs.confidence].every(finite)||ls.confidence<.4||rs.confidence<.4)return null;
+    const span=Math.hypot((ls.x-rs.x)*pose.aspectRatio,ls.y-rs.y);
+    const boxH=pose.box?.height??0;
+    if(span<.02||!finite(boxH)||boxH<.05)return null;
+    const slope=Math.atan2(Math.abs(ls.y-rs.y),Math.abs((ls.x-rs.x)*pose.aspectRatio))*180/Math.PI;
+    const ratio=span/boxH;
+    // Learn this student's frontal shoulder-width-to-height ratio when facing the camera.
+    if(difference!==null&&difference<=20&&slope<=15&&ls.x>rs.x){
+      this.frontalShoulderRatio=this.frontalShoulderRatio===null?ratio:this.frontalShoulderRatio*.85+ratio*.15;
+    }
+    if(slope>18)return null;
+    // Shoulders visually reversed (left shoulder left of right shoulder) => torso turned > 90 deg.
+    const reversed=ls.x<rs.x-.005;
+    if(reversed)return away;
+    if(this.frontalShoulderRatio===null)return away?false:false;
+    const narrowed=ratio<=this.frontalShoulderRatio*this.thresholds.torsoNarrowPercent/100;
+    return away&&narrowed;
   }
 
   update(input:PostureInput,now:number):{signals:BehaviorSignal[];calibration:ObservationCalibration}{
     const heading=input.heading&&fresh(input.heading.at,now)&&finite(input.heading.value)&&Math.abs(input.heading.value)<=90?input.heading:null;
     const features=this.features(input.pose,now);
     const source=heading?.source??'unavailable';
-    let direction=this.directions.get(source);
-    if(!direction){direction={head:new Dwell(),torso:new Dwell(),smile:new Dwell(),turned:false};this.directions.set(source,direction);}
+    const direction=this.direction;
     if(!heading){
-      for(const previous of this.directions.values()){
-        previous.head.reset();previous.torso.reset();previous.smile.reset();previous.turned=false;
-      }
+      direction.head.reset();direction.torso.reset();direction.smile.reset();direction.turned=false;
     }
     const difference=heading?Math.abs(heading.value-this.cameraYaw):null;
     // A nose/ear proxy is less precise than the measured face pose. Require
     // extra evidence at the entry boundary, without learning a sideways child
     // as the neutral camera direction. Existing release hysteresis is retained.
     const entryAngle=this.thresholds.headTurnAngleDeg+(source==='body_keypoints'&&!direction.head.accumulating?5:0);
-    const away=difference===null?null:direction.turned?difference>this.thresholds.headTurnAngleDeg*.8:difference>=entryAngle;
+    const away=difference===null?null:(direction.turned||direction.head.accumulating)?difference>this.thresholds.headTurnAngleDeg*.8:difference>=entryAngle;
     const headAt=heading?.at??now;
     const head=direction.head.update(away,headAt,now,this.thresholds.headTurnedMs,600);
     direction.turned=head.state==='confirmed';
@@ -153,6 +172,7 @@ export class PostureBehavior {
     } else {
       const deepHead=this.headBelowShoulders(input.pose,now);
       if(deepHead?.deep)slumped=true;
+      bodyTurn=this.seatedTorsoTurn(input.pose,now,away,difference);
     }
     const rest=input.deskRest;
     const restImageAt=rest?.imageAt??now;
@@ -172,16 +192,21 @@ export class PostureBehavior {
     const restAccepted=restPositive&&!upright;
     if(restAccepted)slumped=true;
     const poseAt=restAccepted?rest!.observedAt:features?.at??input.pose?.observedAt??now;
+    const slumpNow=restAccepted?restImageAt:now;
     const torsoAt=Math.min(headAt,poseAt);
     const smileKnown=input.smile&&fresh(input.smile.at,now)&&[input.smile.left,input.smile.right].every(v=>finite(v)&&v>=0&&v<=1);
-    const smiling=smileKnown?input.smile!.left>=this.thresholds.smilePercent/100&&input.smile!.right>=this.thresholds.smilePercent/100:null;
+    const smileMin=this.thresholds.smilePercent/100;
+    const smiling=smileKnown?(
+      (input.smile!.left+input.smile!.right)/2>=smileMin||
+      (Math.max(input.smile!.left,input.smile!.right)>=smileMin&&Math.min(input.smile!.left,input.smile!.right)>=smileMin*.55)
+    ):null;
     const smileActive=away===null||head.state==='unavailable'?null:head.state==='confirmed'?smiling:false;
     const smileAt=Math.min(headAt,input.smile?.at??now);
     const signals:BehaviorSignal[]=[
       {type:'head_turned',label:'Quay lệch hướng lâu',...head,observedAt:headAt},
       {type:'torso_turned',label:'Có dấu hiệu quay thân sang bên',...direction.torso.update(bodyTurn,torsoAt,now,this.thresholds.torsoTurnedMs),observedAt:torsoAt},
       {type:'turned_smiling',label:'Quay sang bên kèm cười',...direction.smile.update(smileActive,smileAt,now,this.thresholds.turnedSmilingMs),observedAt:smileAt},
-      {type:'upper_body_slumped',label:'Có dấu hiệu gục đầu/thân trên',...this.slump.update(slumped,poseAt,now,this.thresholds.slumpMs,600),observedAt:poseAt},
+      {type:'upper_body_slumped',label:'Có dấu hiệu gục đầu/thân trên',...this.slump.update(slumped,poseAt,slumpNow,this.thresholds.slumpMs,600),observedAt:poseAt},
     ];
     return {signals,calibration:{state:'ready',headingReady:true,postureReady:true,reference:'camera',
       startedAt:this.startedAt,expiresAt:this.startedAt}};

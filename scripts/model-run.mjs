@@ -40,7 +40,7 @@ if (!args.length || args.includes('--help') || args.includes('-h')) {
 }
 
 const flags = [];
-let videoArg = null;
+const positionals = [];
 let ramArg = null;
 for (let i = 0; i < args.length; i++) {
   const token = args[i];
@@ -53,12 +53,15 @@ for (let i = 0; i < args.length; i++) {
     if (['--width', '--headless-smoke'].includes(token) && i + 1 < args.length) {
       flags.push(args[++i]);
     }
-  } else if (!videoArg) {
-    videoArg = token;
-  } else if (ramArg === null && parseRamMb(token) !== null) {
-    ramArg = token;
+  } else {
+    positionals.push(token);
   }
 }
+
+if (ramArg === null && positionals.length >= 2 && parseRamMb(positionals.at(-1)) !== null) {
+  ramArg = positionals.pop();
+}
+const videoArg = positionals.length ? positionals.join(' ') : null;
 
 let ramMb = null;
 if (ramArg !== null) {

@@ -264,4 +264,22 @@ describe('posture integration and lifecycle',()=>{
     for(const at of [1000,1500,2000,2600])result=engine.update({heading:null,smile:null,pose:deskSlumpPose(at)},at);
     expect(find(result!,'upper_body_slumped').state).toBe('confirmed');
   });
+  it('detects seated torso_turned when hips/elbows are under the desk and turned_smiling with asymmetric profile smile',()=>{
+    const engine=new PostureBehavior(1000);
+    const seated=(at:number,lsX:number,rsX:number):BodyPose=>{
+      const keypoints=Array.from({length:17},()=>({x:.5,y:.8,confidence:0}));
+      keypoints[0]={x:.5,y:.25,confidence:.9};
+      keypoints[5]={x:lsX,y:.45,confidence:.9};keypoints[6]={x:rsX,y:.45,confidence:.9};
+      return {box:{x:.2,y:.15,width:.6,height:.7},aspectRatio:1,keypoints,confidence:.9,observedAt:at,source:'YOLO11n-pose'};
+    };
+    // Learn frontal shoulder width facing camera, then turn sideways with narrowed shoulders and asymmetric smile.
+    for(const at of [1000,1400,1800])engine.update({heading:{value:0,source:'face_pose',at},pose:seated(at,.68,.32),smile:{left:0,right:0,at}},at);
+    let result:ReturnType<PostureBehavior['update']>;
+    for(const at of [2200,2800,3400,4000,4600,5200]){
+      result=engine.update({heading:{value:48,source:'face_pose',at},pose:seated(at,.58,.42),smile:{left:.68,right:.34,at}},at);
+    }
+    expect(find(result!,'head_turned').state).toBe('confirmed');
+    expect(find(result!,'torso_turned').state).toBe('confirmed');
+    expect(find(result!,'turned_smiling').state).toBe('confirmed');
+  });
 });

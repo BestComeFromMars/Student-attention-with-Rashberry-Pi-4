@@ -17,6 +17,7 @@ interface History {
   face: FacialBehavior;
   yawnSource?: FaceObservation['mouthSource'];
   headDown: boolean;
+  pitchBaseline: number | null;
   head: HeadMotion;
   posture:PostureBehavior;
   alerts: Map<Kind, BehaviorAlert>;
@@ -32,8 +33,13 @@ const LABELS: Record<Kind, string> = {
 };
 const GAP = 2000;
 const OBJECT_GAP = 5000;
-const PRIORITY:Kind[]=['upper_body_slumped','phone','eyes_closed','turned_smiling','torso_turned','head_turned',
-  'head_turning','head_down','yawn','talking','laptop'];
+// Specificity-first arbitration: composite/specific behaviors always win over
+// generic parent postures (e.g., upper_body_slumped > head_down; talking /
+// turned_smiling / torso_turned / head_turning > head_turned).
+const PRIORITY:Kind[]=[
+  'upper_body_slumped','phone','talking','yawn','turned_smiling','torso_turned',
+  'head_turning','eyes_closed','head_turned','head_down','laptop',
+];
 export const ALERT_HOLD_MS = 5000;
 
 function usable(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value); }
@@ -70,7 +76,7 @@ export class AttentionEvaluator {
     return tracks.map(track => {
       let history = this.history.get(track.id);
       if (!history || (history.owner != null && track.personId != null && history.owner !== track.personId)) {
-        history = { owner: track.personId, timers: new Map(), face: new FacialBehavior(this.settings.thresholds), headDown: false,
+        history = { owner: track.personId, timers: new Map(), face: new FacialBehavior(this.settings.thresholds), headDown: false, pitchBaseline: null,
           head: new HeadMotion(this.settings.thresholds),posture:new PostureBehavior(now,configuredCameraYaw(),this.settings.thresholds), alerts: new Map() };
         this.history.set(track.id, history);
       }
@@ -88,17 +94,45 @@ export class AttentionEvaluator {
       const reliableImage = observation?.quality?.usable !== false;
       const faceValid = reliableImage && track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.valid === true && usable(faceAt)
         && now-faceAt <= GAP && faceAt <= now+1000 &&
-        (observation.facePixels === undefined || (usable(observation.facePixels) && observation.facePixels >= 28));
+        (observation.facePixels === undefined || (usable(observation.facePixels) && observation.facePixels >= 18));
       const mouthValid = faceValid || (reliableImage && track.status === 'visible' && track.faceVisibility!=='unavailable' && observation?.mouthValid === true &&
         usable(faceAt) && now-faceAt <= GAP && faceAt <= now+1000 &&
-        usable(observation.facePixels) && observation.facePixels >= 28);
+        usable(observation.facePixels) && observation.facePixels >= 18);
       const pitch = observation?.pitchDeg;
       const poseValid=faceValid||mouthValid||(reliableImage&&track.status==='visible'&&track.faceVisibility!=='unavailable'&&
         observation?.headPoseValid===true&&usable(faceAt)&&now-faceAt<=GAP&&faceAt<=now+1000);
       const cues = history.face.update(observation, faceAt, faceValid, mouthValid);
       const thresholds=this.settings.thresholds;
-      if (poseValid && usable(pitch)) history.headDown = pitch >= (thresholds.headDownPitchDeg-(history.headDown?2:0));
-      else history.headDown = false;
+      let headDownActive: boolean | null = null;
+      let headDownAt = faceAt;
+      if (poseValid && usable(pitch)) {
+        // Compensate low-mounted (negative upright pitch) and top-down classroom
+        // (positive upright pitch ~8-11 deg) cameras while keeping genuine bows detectable.
+        if (pitch <= 14 && !history.headDown) {
+          const clamped = Math.max(-22, Math.min(10, pitch));
+          history.pitchBaseline = history.pitchBaseline === null ? clamped : history.pitchBaseline * 0.85 + clamped * 0.15;
+        }
+        const offset = Math.max(-22, Math.min(10, history.pitchBaseline ?? 0));
+        const effectivePitch = pitch - offset;
+        history.headDown = effectivePitch >= (thresholds.headDownPitchDeg-(history.headDown?2:0));
+        headDownActive = history.headDown;
+      } else {
+        const bp = track.status === 'visible' ? observation?.bodyPose : undefined;
+        const kp = bp && usable(bp.observedAt) && now - bp.observedAt <= GAP && bp.keypoints?.length === 17 ? bp.keypoints : null;
+        const ls = kp && kp[5].confidence >= .35 ? kp[5] : null;
+        const rs = kp && kp[6].confidence >= .35 ? kp[6] : null;
+        const headPts = kp ? [kp[0], kp[1], kp[2], kp[3], kp[4]].filter(p => p.confidence >= .35) : [];
+        if (ls && rs && headPts.length) {
+          const span = Math.hypot((ls.x - rs.x) * (bp!.aspectRatio || 1), ls.y - rs.y);
+          const shY = (ls.y + rs.y) / 2;
+          const headY = kp![0].confidence >= .35 ? kp![0].y : Math.max(...headPts.map(p => p.y));
+          if (span >= .02) {
+            history.headDown = headY >= shY - (history.headDown ? .15 : .10) * span;
+            headDownActive = history.headDown;
+            headDownAt = bp!.observedAt;
+          } else history.headDown = false;
+        } else history.headDown = false;
+      }
       const reading = this.sample(history, 'book_context', objectsEnabled && track.status === 'visible'
         ? observation?.bookInteraction === true && observation?.phoneHeld !== true && observation?.laptopInteraction !== true
         : null, objectsAt, now, 1000, OBJECT_GAP);
@@ -111,7 +145,7 @@ export class AttentionEvaluator {
       };
       add('eyes_closed', cues.eyeClosed, faceAt, thresholds.eyesClosedMs);
       add('phone', objectsEnabled && track.status === 'visible' ? observation?.phoneHeld ?? null : null, objectsAt, thresholds.phoneMs);
-      add('head_down', poseValid && usable(pitch) ? history.headDown : null, faceAt, thresholds.headDownMs);
+      add('head_down', headDownActive, headDownAt, thresholds.headDownMs);
       if(cues.yawn!==null&&history.yawnSource!==observation?.mouthSource){
         history.yawnSource=observation?.mouthSource;
         history.timers.delete('yawn');

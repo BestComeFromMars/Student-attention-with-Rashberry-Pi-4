@@ -34,7 +34,7 @@ describe('speech evidence freshness and noise controls',()=>{
     const profile={valid:false,mouthSource:'profile_roi' as const,facePixels:70};
     expect(face.update(observation(1000,.8,profile),1000,false,true).yawn).toBe(true);
     expect(face.update(observation(1300,.55,profile),1300,false,true).yawn).toBe(false);
-    expect(face.update(observation(1600,.8,{...profile,facePixels:45}),1600,false,true).yawn).toBeNull();
+    expect(face.update(observation(1600,.8,{...profile,facePixels:15}),1600,false,true).yawn).toBeNull();
     expect(face.update(observation(1900,.8,{...profile,quality:{usable:false,brightness:12,contrast:2,sharpness:1}}),
       1900,false,true).yawn).toBeNull();
   });
@@ -73,7 +73,7 @@ describe('speech evidence freshness and noise controls',()=>{
   });
   it.each([
     {quality:{usable:false,brightness:10,contrast:2,sharpness:1}},
-    {facePixels:45},
+    {facePixels:12},
   ])('does not count uncertain small or poor image measurements: %o',extra=>{
     const face=new FacialBehavior(settings());
     for(let at=1000;at<5000;at+=150){
@@ -81,10 +81,10 @@ describe('speech evidence freshness and noise controls',()=>{
       expect(result.talking.state).toBe('unavailable');expect(result.mouthCycles).toBe(0);
     }
   });
-  it('resets speech accumulation on head-pose jumps and accepts stable profile measurements afterwards',()=>{
+  it('resets speech accumulation on extreme head-pose snaps and accepts stable profile measurements afterwards',()=>{
     const face=new FacialBehavior(settings());
     face.update(observation(1000,.04),1000,true);
-    for(const [at,mouth,yaw]of [[1100,.16,15],[1250,.04,0],[1400,.16,15],[1550,.04,0],[1700,.16,15],[1850,.04,0]])
+    for(const [at,mouth,yaw]of [[1100,.16,35],[1250,.04,0],[1400,.16,35],[1550,.04,0],[1700,.16,35],[1850,.04,0]])
       expect(face.update(observation(at,mouth,{yawDeg:yaw}),at,true).talking.state).toBe('unavailable');
     let result:ReturnType<FacialBehavior['update']>;
     for(const [at,mouth]of [[2000,.04],[2100,.16],[2250,.04],[2400,.16],[2550,.04],[2700,.16],[2850,.04]])
@@ -127,5 +127,18 @@ describe('speech evidence freshness and noise controls',()=>{
     }
     expect(result!.talking.state).toBe('confirmed');
     expect(result!.mouthCycles).toBeGreaterThanOrEqual(3);
+  });
+  it('tracks peak-to-valley mouth excursions even when speech starts at a mid-level baseline',()=>{
+    const motion=new SpeechMotion(settings());
+    // Starts at 0.045, closes to 0.012, opens to 0.080 (swing 0.068 >= 0.042), closes to 0.015, opens to 0.085.
+    for(const [at,m] of [[1000,.045],[1200,.012],[1400,.080],[1650,.015],[1950,.085]])motion.update(m,null,at);
+    expect(motion.evidence.count).toBeGreaterThanOrEqual(3);
+    expect(motion.evidence.durationMs).toBeGreaterThanOrEqual(500);
+  });
+  it('blocks silent false talking when lips stay closed despite jawOpen spikes or sub-opening micro-drift',()=>{
+    const face=new FacialBehavior(defaultObservationSettings().thresholds);
+    for(const [at,m,j] of [[1000,.02,.01],[1300,.04,.32],[1600,.02,.02],[1900,.05,.38],[2200,.02,.01],[2600,.06,.30],[2900,.02,.01]]){
+      expect(face.update(observation(at,m,{jawOpen:j}),at,true).talking.state).not.toBe('confirmed');
+    }
   });
 });

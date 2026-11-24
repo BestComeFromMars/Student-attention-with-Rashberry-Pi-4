@@ -51,7 +51,7 @@ export class FacialBehavior {
 
   private newBaselines() {
     return { eye: new Baseline(.8, 3, 400), leftEye: new Baseline(.8, 3, 400),
-      rightEye: new Baseline(.8, 3, 400) };
+      rightEye: new Baseline(.8, 3, 400), blink: new Baseline(.35, 3, 400) };
   }
   private reset() {
     this.lastAt = null;
@@ -93,29 +93,13 @@ export class FacialBehavior {
     const blinkKnown = available(leftBlink) && available(rightBlink);
     const blink = blinkKnown ? (leftBlink + rightBlink) / 2 : 0;
     const minBlink = blinkKnown ? Math.min(leftBlink, rightBlink) : 0;
-    const threshold = (baseline: Baseline) => {
-      const reference = baseline.value(at);
-      return reference === null ? (blinkKnown ? (this.closed ? .18 : .16) : (this.closed ? .21 : .19))
-        : Math.min(this.closed ? .28 : .24, Math.max(this.closed ? .16 : .14, reference * (this.closed ? .78 : .68)));
-    };
-    const bothEyeRatios = available(leftEar) && available(rightEar);
-    const bothClosed = bothEyeRatios && leftEar <= threshold(this.baselines.leftEye) && rightEar <= threshold(this.baselines.rightEye);
-    const geometryClosed = available(ear) && ear <= threshold(this.baselines.eye) && (!bothEyeRatios || bothClosed);
-    // Clear geometric closure and strong bilateral blendshapes are independent evidence.
-    const supportedClosure = available(ear) && ear < Math.max(this.closed ? .22 : .20, threshold(this.baselines.eye) * 1.06) && blinkKnown &&
-      blink >= (this.closed ? .32 : .40) && minBlink >= (this.closed ? .18 : .22);
-    const blendClosure = blinkKnown && blink >= (this.closed ? .55 : .68) && minBlink >= (this.closed ? .45 : .58);
-    const wink = blinkKnown && Math.abs(leftBlink - rightBlink) > .6 && minBlink < .2 && !bothClosed;
-    const eyeClosed = available(ear) || blinkKnown ? !wink && (geometryClosed || supportedClosure || blendClosure) : null;
-    this.closed = eyeClosed === true;
-    const eyesOpen = available(ear) && eyeClosed === false && (blinkKnown ? blink < .55 && ear >= .12 : ear >= .20);
+    const leftLookDown = eyesValid ? observation.eyeLookDownLeft : undefined;
+    const rightLookDown = eyesValid ? observation.eyeLookDownRight : undefined;
+    const lookDownKnown = available(leftLookDown) && available(rightLookDown);
+    const lookDown = lookDownKnown ? (leftLookDown + rightLookDown) / 2 : 0;
+    const obsPitch = typeof observation.pitchDeg === 'number' && Number.isFinite(observation.pitchDeg) ? observation.pitchDeg : null;
+    const lookingDown = (lookDownKnown && lookDown >= .28) || (obsPitch !== null && obsPitch >= 6 && blinkKnown);
     const yaw = observation.yawDeg ?? (Number.isFinite(observation.yawOffset) ? observation.yawOffset * 90 : null);
-    if (eyesOpen && available(ear) && (!blinkKnown || blink < .4) && typeof yaw === 'number' && Math.abs(yaw) <= 25 &&
-        (observation.pitchDeg == null || Math.abs(observation.pitchDeg) <= 20)) {
-      this.baselines.eye.add(at, ear);
-      if (available(leftEar)) this.baselines.leftEye.add(at, leftEar);
-      if (available(rightEar)) this.baselines.rightEye.add(at, rightEar);
-    }
 
     const mouth = observation.mouthOpenRatio;
     const jaw = observation.jawOpen;
@@ -132,7 +116,7 @@ export class FacialBehavior {
       this.yawnSource=observation.mouthSource;
     }
     const profileMouth=mouthValid&&observation.mouthSource==='profile_roi'&&
-      (observation.facePixels??0)>=64&&observation.quality?.usable!==false;
+      (observation.facePixels??0)>=22&&observation.quality?.usable!==false;
     const yawn = valid && (mouthKnown || jawKnown) ?
       (mouthKnown && (mouth >= (this.yawning ? .43 : .52) ||
         (eyeSqueeze&&jawKnown && mouth >= (this.yawning ? .28 : .35) && jaw >= (this.yawning ? .45 : .55)))) ||
@@ -144,7 +128,7 @@ export class FacialBehavior {
 
     let talking: Cues['talking'] = { state: 'unavailable', durationMs: 0 };
     const speechImage=observation.quality?.usable!==false&&
-      (observation.facePixels===undefined||Number.isFinite(observation.facePixels)&&observation.facePixels>=52);
+      (observation.facePixels===undefined||Number.isFinite(observation.facePixels)&&observation.facePixels>=18);
     if ((mouthKnown || jawKnown)&&speechImage) {
       if (this.mouthSource !== observation.mouthSource) this.clearSpeech();
       this.mouthSource = observation.mouthSource;
@@ -152,10 +136,9 @@ export class FacialBehavior {
       const pitch=typeof observation.pitchDeg==='number'&&Number.isFinite(observation.pitchDeg)?observation.pitchDeg:null;
       const speechYaw=typeof yaw==='number'&&Number.isFinite(yaw)?yaw:null;
       const poseDt=this.speechPose?at-this.speechPose.at:0;
-      const poseLimit=poseDt<=300?13:22;
-      const poseJump=this.speechPose&&at>this.speechPose.at&&poseDt<=750&&
-        (speechYaw!==null&&this.speechPose.yaw!==null&&Math.abs(speechYaw-this.speechPose.yaw)>poseLimit||
-          pitch!==null&&this.speechPose.pitch!==null&&Math.abs(pitch-this.speechPose.pitch)>poseLimit);
+      const dyaw=this.speechPose&&speechYaw!==null&&this.speechPose.yaw!==null?Math.abs(speechYaw-this.speechPose.yaw):0;
+      const dpitch=this.speechPose&&pitch!==null&&this.speechPose.pitch!==null?Math.abs(pitch-this.speechPose.pitch):0;
+      const poseJump=Boolean(this.speechPose&&at>this.speechPose.at&&poseDt<=350&&(dyaw>26||dpitch>22||dyaw+dpitch>34));
       this.speechPose={yaw:speechYaw,pitch,at};
       const smiling=available(observation.mouthSmileLeft)&&available(observation.mouthSmileRight)&&
         (observation.mouthSmileLeft+observation.mouthSmileRight)/2>=.45&&Math.min(observation.mouthSmileLeft,observation.mouthSmileRight)>=.3;
@@ -164,10 +147,49 @@ export class FacialBehavior {
       } else if (!smiling) {
         this.speech.update(mouthKnown ? mouth : null, jawKnown ? jaw : null, at);
       }
-      const { count, durationMs,observedAt,active } = this.speech.evidence;
-      talking = { state: yawn||smiling ? 'clear' : poseJump?'unavailable':active&&count >= 2 && durationMs >= this.thresholds.talkingMs ? 'confirmed'
-        : (active&&count>0)||this.speech.pending ? 'pending' : 'clear', durationMs,observedAt };
+      const { durationMs,observedAt,confirmed } = this.speech.evidence;
+      talking = { state: yawn||smiling ? 'clear' : poseJump?'unavailable':confirmed ? 'confirmed'
+        : this.speech.pending ? 'pending' : 'clear', durationMs,observedAt };
     } else this.clearSpeech();
+
+    const threshold = (baseline: Baseline) => {
+      const reference = baseline.value(at);
+      return reference === null ? (blinkKnown ? (this.closed ? .18 : .16) : (this.closed ? .21 : .19))
+        : Math.min(this.closed ? .28 : .24, Math.max(this.closed ? .16 : .14, reference * (this.closed ? .78 : .68)));
+    };
+    const smallFace = observation.facePixels !== undefined && observation.facePixels < 55;
+    const bothEyeRatios = available(leftEar) && available(rightEar);
+    const bothClosed = bothEyeRatios && leftEar <= threshold(this.baselines.leftEye) && rightEar <= threshold(this.baselines.rightEye);
+    const geometryClosed = !smallFace && (!blinkKnown || blink >= .68) && (!lookingDown || !blinkKnown || blink >= .78) &&
+      available(ear) && ear <= threshold(this.baselines.eye) && (!bothEyeRatios || bothClosed);
+    // Clear geometric closure and strong bilateral blendshapes are independent evidence.
+    const supportedClosure = !smallFace && !lookingDown && available(ear) && ear < Math.max(this.closed ? .22 : .20, threshold(this.baselines.eye) * 1.06) && blinkKnown &&
+      blink >= (this.closed ? .56 : .68) && minBlink >= (this.closed ? .45 : .55);
+    const blinkBase = this.baselines.blink.value(at);
+    const tightClosed = blinkKnown && blink >= .90 && minBlink >= .84;
+    const aboveBlinkBase = blinkBase === null || tightClosed || blink >= blinkBase + (this.closed ? .16 : .20);
+    const blendClosure = blinkKnown && aboveBlinkBase && (
+      lookingDown || smallFace
+        ? blink >= (this.closed ? .75 : .82) && minBlink >= (this.closed ? .66 : .75)
+        : blink >= (this.closed ? .55 : .68) && minBlink >= (this.closed ? .45 : .58)
+    );
+    const wink = blinkKnown && Math.abs(leftBlink - rightBlink) > .6 && minBlink < .2 && !bothClosed;
+    const activeTalking = talking.state === 'confirmed' ||
+      (talking.state === 'pending' && this.speech.evidence.count >= 2 && (lookingDown || smallFace));
+    const eyeClosed = available(ear) || blinkKnown
+      ? !wink && !activeTalking && (geometryClosed || supportedClosure || blendClosure)
+      : null;
+    this.closed = eyeClosed === true;
+    const eyesOpen = available(ear) && eyeClosed === false && (blinkKnown ? blink < .55 && ear >= .12 : ear >= .20);
+    if (blinkKnown && eyeClosed === false && blink < .78) {
+      this.baselines.blink.add(at, blink);
+    }
+    if (eyesOpen && available(ear) && (!blinkKnown || blink < .4) && typeof yaw === 'number' && Math.abs(yaw) <= 25 &&
+        (observation.pitchDeg == null || Math.abs(observation.pitchDeg) <= 20)) {
+      this.baselines.eye.add(at, ear);
+      if (available(leftEar)) this.baselines.leftEye.add(at, leftEar);
+      if (available(rightEar)) this.baselines.rightEye.add(at, rightEar);
+    }
 
     this.last = { eyeClosed, eyesOpen, yawn, talking, mouthCycles: this.speech.evidence.count };
     return this.last;

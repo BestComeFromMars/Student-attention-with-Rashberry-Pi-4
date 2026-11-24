@@ -73,6 +73,7 @@ class Perception:
         # Keep the legacy status field for clients, without loading a scoring model.
         self.engagement=SimpleNamespace(model=None,status='disabled_observation_only')
         self.model_lock = threading.Lock()
+        self.profile_lock = threading.Lock()
         self.session_features = {}
         self.active_features = default_features()
         self.desk_rest = None
@@ -172,7 +173,7 @@ class Perception:
         return vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
             base_options=options(model_asset_path=str(self.models/"face_landmarker.task")),
             running_mode=vision.RunningMode.IMAGE, num_faces=1,
-            min_face_detection_confidence=.3, min_face_presence_confidence=.45,
+            min_face_detection_confidence=.2, min_face_presence_confidence=.3,
             output_face_blendshapes=True, output_facial_transformation_matrixes=True))
 
     def _ensure_face(self):
@@ -645,14 +646,20 @@ class Perception:
         quality = face_quality(frame,box)
         missing = dict(valid=False,facePresent=False,eyeAspectRatio=0,yawOffset=0,
                        observedAt=at,facePixels=face["facePixels"],quality=quality)
-        left,top,right,bottom = pixel_rect(box,width,height,.25)
+        left,top,right,bottom = pixel_rect(box,width,height,.34)
         crop = frame[top:bottom,left:right]
         if not crop.size:
             return missing
-        if face["facePixels"] < 24:
+        if face["facePixels"] < 16:
             return self._face_heading_only(frame, face, at)
         factor = 256/max(crop.shape[:2])
-        scaled = cv2.resize(crop,(max(1,round(crop.shape[1]*factor)),max(1,round(crop.shape[0]*factor))))
+        if factor > 1.0:
+            scaled = cv2.resize(crop,(max(1,round(crop.shape[1]*factor)),max(1,round(crop.shape[0]*factor))),interpolation=cv2.INTER_CUBIC)
+            if max(crop.shape[:2]) < 96:
+                blurred = cv2.GaussianBlur(scaled,(0,0),1.0)
+                scaled = cv2.addWeighted(scaled,1.35,blurred,-0.35,0)
+        else:
+            scaled = cv2.resize(crop,(max(1,round(crop.shape[1]*factor)),max(1,round(crop.shape[0]*factor))),interpolation=cv2.INTER_AREA)
         rgb = np.ascontiguousarray(cv2.cvtColor(scaled,cv2.COLOR_BGR2RGB))
         face_model = self._worker_face()
         result = face_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
@@ -665,9 +672,17 @@ class Perception:
                     result = face_model.detect(mp.Image(image_format=mp.ImageFormat.SRGB,data=rgb))
         profile_only = False
         if not result.face_landmarks:
-            if face["facePixels"] >= 48 and not getattr(self, '_dense_face_batch', False) and self._feature_enabled(session, 'profileMesh'):
+            if face["facePixels"] >= 22 and self._feature_enabled(session, 'profileMesh'):
                 prof = self.profile if getattr(self, 'profile', None) is not None else (self._ensure_profile() if hasattr(self, 'model_lock') else None)
-                result = prof.detect(frame,face,state) if prof is not None else None
+                plock = getattr(self, 'profile_lock', None)
+                if prof is not None and (plock is None or plock.acquire(blocking=False)):
+                    try:
+                        result = prof.detect(frame,face,state)
+                    finally:
+                        if plock is not None:
+                            plock.release()
+                else:
+                    result = None
             else:
                 result = None
             if result is None:
@@ -685,6 +700,35 @@ class Perception:
         left_ear,right_ear = (None,None) if profile_only else (eye_ratio(points,LEFT_EYE),eye_ratio(points,RIGHT_EYE))
         ear = 0 if profile_only else (left_ear+right_ear)/2
         mouth = measure_mouth(result.face_landmarks[0],coordinate_width,coordinate_height)
+        if not profile_only and mouth.get('mouthOpenRatio') is not None:
+            # On small/top-down faces (< 60 px), inner-lip landmarks 13..14 often
+            # collapse shut even when the mouth cavity is visibly open. Fuse
+            # outer-lip separation (0..17 / 61..291) gated by oral-cavity darkness
+            # relative to cheek skin (50, 280), capped below yawn range (<= 0.32).
+            lm = result.face_landmarks[0]
+            mw = max(1.0, distance(points[61], points[291]))
+            outer = distance(points[0], points[17]) / mw
+            if outer > 0.28:
+                gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                sh_s, sw_s = gray.shape[:2]
+                mcx = int(round((lm[13].x + lm[14].x) * 0.5 * sw_s))
+                mcy = int(round((lm[13].y + lm[14].y) * 0.5 * sh_s))
+                mr = max(2, int(round(max(2.0, abs(lm[291].x - lm[61].x) * sw_s) * 0.16)))
+                patch = gray[max(0, mcy - mr):min(sh_s, mcy + mr + 1), max(0, mcx - mr):min(sw_s, mcx + mr + 1)]
+                skin_vals = []
+                for sidx in (50, 280):
+                    sx, sy = int(round(lm[sidx].x * sw_s)), int(round(lm[sidx].y * sh_s))
+                    sp = gray[max(0, sy - 4):min(sh_s, sy + 5), max(0, sx - 4):min(sw_s, sx + 5)]
+                    if sp.size:
+                        skin_vals.append(float(np.median(sp)))
+                if patch.size and skin_vals:
+                    skin = float(np.mean(skin_vals))
+                    dark = max(0.0, (skin - float(np.percentile(patch, 20))) / max(20.0, skin))
+                    if dark >= 0.26:
+                        mod = min(1.0, (dark - 0.23) / 0.14)
+                        cavity_open = min(0.32, (outer - 0.28) * 0.75 * mod)
+                        if cavity_open > mouth['mouthOpenRatio']:
+                            mouth = {**mouth, 'mouthOpenRatio': float(cavity_open)}
         blend = {item.category_name:float(item.score) for item in result.face_blendshapes[0]} if result.face_blendshapes else {}
         pitch,yaw = None,result.yaw if profile_only else None
         if result.facial_transformation_matrixes:
@@ -692,7 +736,11 @@ class Perception:
             # Remove model scale before decomposing rotation in the camera frame.
             matrix = matrix / np.maximum(np.linalg.norm(matrix,axis=0,keepdims=True),1e-6)
             angles = cv2.RQDecomp3x3(matrix)[0]
-            pitch,yaw = float(-angles[0]),float(angles[1])
+            raw_pitch,raw_yaw = float(angles[0]),float(angles[1])
+            if abs(raw_pitch) > 90:
+                raw_pitch = raw_pitch - 180.0 if raw_pitch > 0 else raw_pitch + 180.0
+            pitch = raw_pitch if abs(raw_pitch) <= 75 else None
+            yaw = raw_yaw if abs(raw_yaw) <= 90 else None
             # Supplement 3D matrix decomposition with rigid upper-face geometry
             # (outer eye corners 33..263, nose tip 1, cheek contours 234..454),
             # which is invariant to mouth opening and more responsive to real
@@ -701,10 +749,10 @@ class Perception:
             eye_mid_y = float((points[33][1] + points[133][1] + points[362][1] + points[263][1]) * 0.25)
             nose_drop = float((points[1][1] - eye_mid_y) / eye_span)
             geom_pitch = float(np.clip((nose_drop - 0.36) * 95.0, -45.0, 60.0))
-            if pitch >= 3.0 and geom_pitch > pitch:
+            if pitch is not None and pitch >= 3.0 and geom_pitch > pitch:
                 pitch = float(min(60.0, 0.45 * pitch + 0.55 * geom_pitch))
             cheek_span = float(points[454][0] - points[234][0])
-            if cheek_span >= 6.0 and abs(yaw) >= 18.0:
+            if yaw is not None and cheek_span >= 6.0 and abs(yaw) >= 18.0:
                 cheek_mid_x = float((points[234][0] + points[454][0]) * 0.5)
                 cheek_offset = float((points[1][0] - cheek_mid_x) / (cheek_span * 0.5))
                 geom_yaw = float(np.clip(cheek_offset * 52.0, -75.0, 75.0))
@@ -712,28 +760,21 @@ class Perception:
                     yaw = float(0.45 * yaw + 0.55 * geom_yaw)
         refined = [(mn[0]/width-box[0])/max(box[2],1e-6),(mn[1]/height-box[1])/max(box[3],1e-6),
                    (mx[0]-mn[0])/width/max(box[2],1e-6),(mx[1]-mn[1])/height/max(box[3],1e-6)]
-        mouth_valid = bool(face["facePixels"] >= int(os.environ.get("MIN_BEHAVIOR_FACE_PX","28")))
+        mouth_valid = bool(face["facePixels"] >= int(os.environ.get("MIN_BEHAVIOR_FACE_PX","18")))
         valid = mouth_valid and not profile_only
         # Coarse orientation needs less detail than eyelids/articulation. Do not
         # withhold a measured head pose solely because mouth detail is missing.
-        head_pose_valid=bool(face['facePixels']>=20 and quality.get('usable') is not False and
+        head_pose_valid=bool(face['facePixels']>=16 and quality.get('usable') is not False and
             yaw is not None and np.isfinite(yaw) and abs(yaw)<=90 and
             (pitch is None or np.isfinite(pitch) and abs(pitch)<=75))
-        # Upscaling a tiny face does not restore eyelid detail. Keep its box,
-        # heading and mouth measurements, but do not turn noisy EAR into an
-        # eye-closure warning. The original-image pixels decide availability.
-        eye_valid=bool(valid and face['facePixels']>=38 and quality.get('usable') is not False and
-            min(distance(points[33],points[133]),distance(points[362],points[263]))>=5.5 and
-            (yaw is None or abs(yaw)<=45) and (pitch is None or abs(pitch)<=35))
+        # Allow eyelid evaluation across wider classroom distances and angles
+        # using both EAR and bilateral MediaPipe blink blendshapes.
+        eye_valid=bool(valid and face['facePixels']>=22 and quality.get('usable') is not False and
+            min(distance(points[33],points[133]),distance(points[362],points[263]))>=3.0 and
+            (yaw is None or abs(yaw)<=55) and (pitch is None or abs(pitch)<=45))
+        # Keep jawOpen pure (MediaPipe jaw blendshape) instead of summing closed-lip
+        # stretch/lowerDown/funnel cues that spike on silent students resting a chin or biting lips.
         jaw_open = blend.get("jawOpen")
-        if jaw_open is not None:
-            lip_motion = (
-                0.55 * (blend.get("mouthFunnel", 0.0) + blend.get("mouthPucker", 0.0))
-                + 0.45 * 0.5 * (blend.get("mouthLowerDownLeft", 0.0) + blend.get("mouthLowerDownRight", 0.0))
-                + 0.35 * 0.5 * (blend.get("mouthUpperUpLeft", 0.0) + blend.get("mouthUpperUpRight", 0.0))
-                + 0.25 * 0.5 * (blend.get("mouthStretchLeft", 0.0) + blend.get("mouthStretchRight", 0.0))
-            )
-            jaw_open = float(min(1.0, max(jaw_open, jaw_open + lip_motion)))
         return dict(valid=valid,facePresent=not profile_only,faceBox=list(box),mouthValid=mouth_valid,
             eyeValid=eye_valid,
             headPoseValid=head_pose_valid,
@@ -741,6 +782,7 @@ class Perception:
             leftEyeAspectRatio=left_ear,rightEyeAspectRatio=right_ear,
             pitchDeg=pitch,yawDeg=yaw,**mouth,jawOpen=jaw_open,
             eyeBlinkLeft=blend.get("eyeBlinkLeft"),eyeBlinkRight=blend.get("eyeBlinkRight"),
+            eyeLookDownLeft=blend.get("eyeLookDownLeft"),eyeLookDownRight=blend.get("eyeLookDownRight"),
             mouthSmileLeft=blend.get('mouthSmileLeft'),mouthSmileRight=blend.get('mouthSmileRight'),
             observedAt=at,facePixels=float(face["facePixels"]),refinement=None if profile_only else [float(x) for x in refined],
             quality=quality)
@@ -751,7 +793,7 @@ class Perception:
         fresh_anchors = anchors_at is None or 0 <= at - anchors_at <= 350
         yaw = profile_yaw(face, minimum=0) if fresh_anchors else None
         pitch = profile_pitch(face) if fresh_anchors else None
-        head_pose_valid = bool(fresh_anchors and face['facePixels'] >= 20 and quality.get('usable') is not False and yaw is not None)
+        head_pose_valid = bool(fresh_anchors and face['facePixels'] >= 16 and quality.get('usable') is not False and yaw is not None)
         return dict(valid=False, facePresent=head_pose_valid, faceBox=list(face['box']), mouthValid=False, eyeValid=False,
             headPoseValid=head_pose_valid, mouthSource='profile_roi', eyeAspectRatio=0, yawOffset=abs(yaw or 0)/90,
             yawDeg=yaw, pitchDeg=pitch,
@@ -772,7 +814,7 @@ class Perception:
             if not use_mesh and not use_heading:
                 return
             self._dense_face_batch = dense
-            if use_mesh and face.get('facePixels', 0) >= 24:
+            if use_mesh and face.get('facePixels', 0) >= 18:
                 measurement = self._face(frame, face, at, session, state)
             elif use_heading:
                 measurement = self._face_heading_only(frame, face, at)

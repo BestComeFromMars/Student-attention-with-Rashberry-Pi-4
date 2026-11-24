@@ -52,9 +52,9 @@ describe('head motion with fresh per-person evidence',()=>{
     expect(head.update(null,5000,5000).cycles).toBe(0);
     expect(move(head,.4,5200)).toMatchObject({state:'clear',cycles:0});
   });
-  it('does not count changes in measurement source as head movements',()=>{
+  it('rejects out-of-order and stale timestamps across face and body head-turn sources',()=>{
     const head=new HeadMotion();move(head,-.4,1000);
-    expect(move(head,.4,1500,'body_keypoints').cycles).toBe(0);
+    expect(move(head,.4,1500,'body_keypoints').cycles).toBe(1);
     expect(head.update(-.4,1200,1800,'face').state).toBe('unavailable');
     expect(head.update(.4,1950,5000,'body_keypoints').state).toBe('unavailable');
   });
@@ -155,5 +155,49 @@ describe('observation-only behavior evaluation',()=>{
     expect(tracker.update([reacquired],1500).find(t=>t.status==='visible')).toMatchObject({id:'A',personId:8});
     const hidden={...reacquired,personId:9,faceVisibility:'unavailable' as const,faceBox:undefined};
     expect(tracker.update([hidden],1600).find(t=>t.status==='visible')).toMatchObject({id:'B',personId:9});
+  });
+  it('suppresses false eyes_closed when looking down on a high-mounted camera or actively talking, while keeping real closure',()=>{
+    const evaluator=new AttentionEvaluator();
+    let result:StudentTrack;
+    for(const at of [1000,1400,1800,2200,2600]){
+      const input=person(at);
+      Object.assign(input.observation!,{facePixels:31,eyeAspectRatio:.06,eyeBlinkLeft:.60,eyeBlinkRight:.78,
+        eyeLookDownLeft:.42,eyeLookDownRight:.57,pitchDeg:16});
+      result=evaluator.evaluate([input],at)[0];
+      expect(result.signals!.find(s=>s.type==='eyes_closed')!.state).toBe('clear');
+    }
+    for(const at of [3000,3400,3900]){
+      const input=person(at);
+      Object.assign(input.observation!,{facePixels:31,eyeAspectRatio:.04,eyeBlinkLeft:.94,eyeBlinkRight:.92,
+        eyeLookDownLeft:.42,eyeLookDownRight:.57,pitchDeg:16});
+      result=evaluator.evaluate([input],at)[0];
+    }
+    expect(result!.signals!.find(s=>s.type==='eyes_closed')!.state).toBe('confirmed');
+  });
+  it('compensates mild positive camera pitch baseline while confirming genuine downward head bows',()=>{
+    const evaluator=new AttentionEvaluator();
+    for(const at of [1000,1300,1600]){
+      const input=person(at);input.observation!.pitchDeg=6;
+      expect(evaluator.evaluate([input],at)[0].signals!.find(s=>s.type==='head_down')!.state).toBe('clear');
+    }
+    let result:StudentTrack;
+    for(const at of [2000,2400,2900]){
+      const input=person(at);input.observation!.pitchDeg=24;
+      result=evaluator.evaluate([input],at)[0];
+    }
+    expect(result!.signals!.find(s=>s.type==='head_down')!.state).toBe('confirmed');
+  });
+  it('arbitrates specific actions (talking) above generic parent postures (head_turned / head_down)',()=>{
+    const evaluator=new AttentionEvaluator();
+    let result:StudentTrack;
+    const seq:[number,number][]=[[1000,.03],[1300,.16],[1600,.03],[1900,.17],[2200,.03],[2500,.16],[2800,.03],[3200,.16]];
+    for(const [at,m] of seq){
+      const input=person(at,45);
+      Object.assign(input.observation!,{pitchDeg:24,mouthOpenRatio:m,jawOpen:m*1.4});
+      result=evaluator.evaluate([input],at)[0];
+    }
+    expect(result!.signals!.find(s=>s.type==='talking')!.state).toBe('confirmed');
+    expect(result!.signals!.find(s=>s.type==='head_turned')!.state).toBe('confirmed');
+    expect(result!.alerts![0].type).toBe('talking');
   });
 });

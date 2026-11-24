@@ -44,12 +44,11 @@ describe('per-person camera direction and independent evidence sources',()=>{
     }
     expect(result!.signals.find(s=>s.type==='head_turned')!.state).toBe('confirmed');
   });
-  it('never adds two face changes to a body-source change to fabricate three turns',()=>{
+  it('continues counting head turns seamlessly when deep side angles hand off from face to body keypoints',()=>{
     const motion=new HeadMotion();
     const sample=(yaw:number,at:number,source:string)=>{motion.update(yaw,at,at,source);return motion.update(yaw,at+150,at+150,source);};
     sample(0,1000,'face');sample(-.4,1500,'face');expect(sample(0,2000,'face').cycles).toBe(2);
-    sample(0,2200,'body');expect(sample(.4,2700,'body')).toMatchObject({cycles:1,state:'pending'});
-    expect(sample(.4,3000,'face').cycles).toBe(3);
+    sample(0,2200,'body');expect(sample(.4,2700,'body')).toMatchObject({cycles:3,state:'confirmed'});
   });
   it('uses measured small-face orientation without inventing eye or speech detail',()=>{
     const evaluator=new AttentionEvaluator();let result:StudentTrack;

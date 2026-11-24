@@ -7,6 +7,7 @@ const PREVIOUS_SETTINGS_KEY='student-attention.observation-settings.v2';
 const LEGACY_SETTINGS_KEY='student-attention.observation-settings.v1';
 export const CLASSROOM_PRIORITY_IDS: readonly BehaviorSignal['type'][]=[
   'upper_body_slumped','eyes_closed','yawn','talking','head_turning','head_turned','head_down',
+  'torso_turned','turned_smiling',
 ];
 export interface DetectionSettings {objectsEnabled?:boolean;enabled:Record<string,boolean>;thresholds:Record<string,number>;}
 export interface ThresholdField {key:string;group:BehaviorSignal['type'];label:string;value:number;min:number;max:number;step:number;scale:number;unit:string;}

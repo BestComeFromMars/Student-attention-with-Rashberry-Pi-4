@@ -17,13 +17,14 @@ export const BEHAVIOR_SETTINGS: {id:Kind;label:string;description:string;require
 ];
 export const CLASSROOM_PRIORITY_BEHAVIORS: readonly Kind[]=[
   'upper_body_slumped','eyes_closed','yawn','talking','head_turning','head_turned','head_down',
+  'torso_turned','turned_smiling',
 ];
 const duration=(group:Kind,value:number)=>({group,label:'Thời gian xác nhận',value,min:100,max:30000,step:100,scale:1000,unit:'giây'});
 export const THRESHOLD_DEFINITIONS={
   eyesClosedMs:duration('eyes_closed',800),phoneMs:duration('phone',400),
-  headDownMs:duration('head_down',700),
+  headDownMs:duration('head_down',800),
   headDownPitchDeg:{group:'head_down',label:'Góc cúi tối thiểu',value:18,min:5,max:60,step:1,scale:1,unit:'°'},
-  yawnMs:duration('yawn',500),talkingMs:duration('talking',1500),
+  yawnMs:duration('yawn',600),talkingMs:duration('talking',1500),
   laptopMs:duration('laptop',700),
   headTurnChanges:{group:'head_turning',label:'Số lần đổi hướng',value:3,min:2,max:10,step:1,scale:1,unit:'lần'},
   headTurnWindowMs:{group:'head_turning',label:'Cửa sổ đếm',value:10000,min:2000,max:60000,step:1000,scale:1000,unit:'giây'},

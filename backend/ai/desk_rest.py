@@ -221,8 +221,12 @@ def match_rest_to_bodies(bodies,observations,evidence,cue_at,at):
             ct=_containment(body['box'],cue['box'])
             if ov>=.25 or (ct>=.60 and ov>=.10):
                 candidates.append((ov+.35*ct,identity,body))
-        candidates.sort(key=lambda item:-item[0])
-        if not candidates or (len(candidates)>1 and candidates[0][0]-candidates[1][0]<.05):continue
+        candidates.sort(key=lambda item:(-item[0], 0 if item[1] in observations else 1))
+        if not candidates:continue
+        if len(candidates)>1 and candidates[0][0]-candidates[1][0]<.05:
+            # Allow tie-break only when two boxes overlap heavily (duplicate YOLO box on the same person).
+            if iou(candidates[0][2]['box'],candidates[1][2]['box'])<.55:
+                continue
         _,identity,body=candidates[0];used.add(identity)
         old=observations.get(identity,{})
         raw_conf=float(body.get('confidence',.5))

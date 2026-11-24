@@ -137,7 +137,7 @@ class FaceMeasurementTests(unittest.TestCase):
         self.assertNotIn('refinement', observation)
 
     def test_small_face_is_confirmed_without_enabling_behavior(self):
-        observation = self.measure(box=[.25, .25, .06, .08])
+        observation = self.measure(box=[.25, .25, .04, .05])
         self.assertIs(observation['facePresent'], True)
         self.assertIs(observation['valid'], False)
 
